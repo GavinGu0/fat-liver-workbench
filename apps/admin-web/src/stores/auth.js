@@ -10,7 +10,8 @@ function loadUser() {
 export const useAuthStore = defineStore('auth', {
   state: () => ({ user: loadUser() }),
   getters: {
-    isLogin: (s) => !!tokenStore.access && !!s.user,
+    // 仅认可医护角色（doctor/nurse）；患者会话即使存在也不算医护端登录
+    isLogin: (s) => !!tokenStore.access && !!s.user && ['doctor', 'nurse'].includes(s.user.role),
     isDoctor: (s) => s.user && s.user.role === 'doctor',
     isNurse: (s) => s.user && s.user.role === 'nurse',
     role: (s) => (s.user ? s.user.role : '')
