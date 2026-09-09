@@ -50,7 +50,7 @@ const typeLabel = (t) => TYPE_LABELS[t] || '通知';
 async function load() {
   const d = await api.messages();
   items.value = d.items;
-  if (d.followupToday && !sessionStorage.getItem('flwb_fu_popup_done')) {
+  if (d.followupToday && !sessionStorage.getItem('flwb_p_fu_popup_done')) {
     items.value.unshift({
       mid: '__followup__',
       type: 'followup',
@@ -71,7 +71,7 @@ async function open(m) {
 }
 
 async function close() {
-  if (current.value && current.value.mid === '__followup__') sessionStorage.setItem('flwb_fu_popup_done', '1');
+  if (current.value && current.value.mid === '__followup__') sessionStorage.setItem('flwb_p_fu_popup_done', '1');
   current.value = null;
   load();
 }
