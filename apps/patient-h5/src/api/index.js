@@ -23,5 +23,5 @@ function myPid() {
 }
 
 export function currentUser() {
-  try { return JSON.parse(localStorage.getItem('flwb_user') || 'null'); } catch { return null; }
+  try { return JSON.parse(localStorage.getItem('flwb_p_user') || 'null'); } catch { return null; }
 }
