@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫀</text></svg>" />
+  <title>脂肪肝专病管理工作台</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
+      min-height: 100vh;
+      background: linear-gradient(160deg, #0b3d91 0%, #1668dc 55%, #2f8de4 100%);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .wrap { max-width: 960px; width: 100%; }
+    h1 { color: #fff; font-size: 28px; text-align: center; letter-spacing: 1px; }
+    .sub { color: rgba(255,255,255,.75); text-align: center; margin: 10px 0 30px; font-size: 14px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    a.card {
+      display: block; background: #fff; border-radius: 14px; padding: 22px; text-decoration: none;
+      color: #1f2329; transition: transform .15s ease, box-shadow .15s ease;
+    }
+    a.card:hover { transform: translateY(-3px); box-shadow: 0 10px 26px rgba(0,0,0,.18); }
+    .card .icon { font-size: 34px; }
+    .card h2 { font-size: 17px; margin: 10px 0 6px; }
+    .card p { font-size: 13px; color: #6b7280; line-height: 1.7; }
+    .card .go { display: inline-block; margin-top: 12px; font-size: 13px; color: #1668dc; font-weight: 600; }
+    .footer { text-align: center; color: rgba(255,255,255,.6); font-size: 12px; margin-top: 28px; line-height: 1.8; }
+    .footer code { background: rgba(255,255,255,.12); padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🫀 脂肪肝专病管理工作台</h1>
+    <p class="sub">患者院外数据采集 · 医生随访管理 · 护理宣教协作 · MDT 多学科会诊</p>
+    <div class="cards">
+      <a class="card" href="/admin/">
+        <div class="icon">🩺</div>
+        <h2>医生端 / 护理端</h2>
+        <p>工作台全景看板、患者管理、趋势分析、随访/复诊管理、MDT 会诊、宣教推送与标准化评估。</p>
+        <span class="go">进入管理端 →</span>
+      </a>
+      <a class="card" href="/patient/">
+        <div class="icon">📱</div>
+        <h2>患者端 H5</h2>
+        <p>饮食/运动/随访指标每日填报、消息接收（宣教/复诊提醒）、个人记录时间轴。</p>
+        <span class="go">进入患者端 →</span>
+      </a>
+      <a class="card" href="/api/docs">
+        <div class="icon">📘</div>
+        <h2>API 文档</h2>
+        <p>OpenAPI 3.0 规范 + Swagger UI，覆盖认证、患者、填报、MDT、护理、定时任务全部接口。</p>
+        <span class="go">查看文档 →</span>
+      </a>
+    </div>
+    <div class="footer">
+      演示账号：医生 <code>GBMZ / 123456</code> · 护士 <code>HULI01 / 123456</code> · 患者 <code>13800000001 / 123456</code><br />
+      未配置 KV/Blob 时以演示模式运行（内存存储，数据重启重置）；接入 Upstash Redis + Vercel Blob 后自动持久化。
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "@flwb/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "前后端共享常量与医学校验规则",
+  "main": "index.js",
+  "sideEffects": true,
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.js"
+    }
+  }
+}

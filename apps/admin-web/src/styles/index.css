@@ -1,0 +1,25 @@
+:root {
+  --flwb-primary: #1668dc;
+  --flwb-bg: #f5f7fa;
+}
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
+  background: var(--flwb-bg);
+  color: #1f2329;
+}
+.page-card { background: #fff; border-radius: 8px; padding: 16px; }
+.mb-12 { margin-bottom: 12px; }
+.metric-num { font-size: 28px; font-weight: 700; color: #1668dc; }
+.metric-label { font-size: 13px; color: #86909c; }
+.todo-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 4px; border-bottom: 1px dashed #e5e6eb; cursor: pointer;
+}
+.todo-item:last-child { border-bottom: none; }
+.todo-item:hover { background: #f7f8fa; }
+.report-html { line-height: 1.8; }
+.report-html h3 { margin: 8px 0; }
+.report-html table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.report-html th, .report-html td { border: 1px solid #e5e6eb; padding: 6px 10px; text-align: left; }
