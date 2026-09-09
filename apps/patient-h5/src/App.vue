@@ -24,7 +24,9 @@ import { tokenStore } from './api/request';
 
 const route = useRoute();
 const unread = ref(0);
-const showTabbar = computed(() => tokenStore.access && ['/', '/timeline', '/messages'].includes(route.path));
+// 必须先读响应式的 route.path：computed 依赖动态追踪，若非响应式的 tokenStore.access 为空时短路，
+// route 不会被追踪，登录后缓存的 false 不失效，底部导航将永远不显示
+const showTabbar = computed(() => ['/', '/timeline', '/messages'].includes(route.path) && !!tokenStore.access);
 
 async function pollUnread() {
   if (!tokenStore.access) return;
