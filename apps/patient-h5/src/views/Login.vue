@@ -136,7 +136,7 @@ async function submit() {
       });
     }
     tokenStore.set(d.accessToken, d.refreshToken);
-    localStorage.setItem('flwb_user', JSON.stringify(d.user));
+    localStorage.setItem('flwb_p_user', JSON.stringify(d.user));
     router.replace('/');
   } catch (e) {
     err.value = e.message || '操作失败';
