@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import { tokenStore } from '../api/request';
+import { tokenStore, currentUser } from '../api/request';
 
 const routes = [
   { path: '/login', name: 'login', component: () => import('../views/Login.vue'), meta: { public: true } },
@@ -17,9 +17,15 @@ const router = createRouter({
   routes
 });
 
+// 仅认可患者角色的会话（与医护端同域部署，防止医生/护士 token 直接进入患者端）
+function hasPatientSession() {
+  const u = currentUser();
+  return !!tokenStore.access && !!u && u.role === 'patient';
+}
+
 router.beforeEach((to) => {
-  if (!to.meta.public && !tokenStore.access) return { name: 'login' };
-  if (to.name === 'login' && tokenStore.access) return { name: 'home' };
+  if (!to.meta.public && !hasPatientSession()) return { name: 'login' };
+  if (to.name === 'login' && hasPatientSession()) return { name: 'home' };
   return true;
 });
 
