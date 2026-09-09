@@ -1,14 +1,15 @@
 import axios from 'axios';
 
 export const tokenStore = {
-  get access() { return localStorage.getItem('flwb_at') || ''; },
-  get refresh() { return localStorage.getItem('flwb_rt') || ''; },
-  set(a, r) { if (a) localStorage.setItem('flwb_at', a); if (r) localStorage.setItem('flwb_rt', r); },
-  clear() { localStorage.removeItem('flwb_at'); localStorage.removeItem('flwb_rt'); localStorage.removeItem('flwb_user'); }
+  // 与医护端同域部署，key 必须带患者端前缀，避免两应用会话互串
+  get access() { return localStorage.getItem('flwb_p_at') || ''; },
+  get refresh() { return localStorage.getItem('flwb_p_rt') || ''; },
+  set(a, r) { if (a) localStorage.setItem('flwb_p_at', a); if (r) localStorage.setItem('flwb_p_rt', r); },
+  clear() { localStorage.removeItem('flwb_p_at'); localStorage.removeItem('flwb_p_rt'); localStorage.removeItem('flwb_p_user'); }
 };
 
 export function currentUser() {
-  try { return JSON.parse(localStorage.getItem('flwb_user') || 'null'); } catch { return null; }
+  try { return JSON.parse(localStorage.getItem('flwb_p_user') || 'null'); } catch { return null; }
 }
 
 const http = axios.create({ baseURL: '/api/v1', timeout: 20000 });
