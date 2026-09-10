@@ -3,6 +3,9 @@ import './index.js';
 const shared = globalThis.FLWB_SHARED;
 
 export const MED_RANGES = shared.MED_RANGES;
+export const LAB_FIELDS = shared.LAB_FIELDS;
+export const LAB_FIELDS_BY_KEY = shared.LAB_FIELDS_BY_KEY;
+export const labAbnormalKeys = shared.labAbnormalKeys;
 export const ADVISORY = shared.ADVISORY;
 export const ROLES = shared.ROLES;
 export const RISK_LEVELS = shared.RISK_LEVELS;

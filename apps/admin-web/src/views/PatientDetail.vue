@@ -78,6 +78,7 @@
           <el-timeline v-else>
             <el-timeline-item v-for="(r, i) in records" :key="i" :timestamp="fmtTime(r.ts)" :type="typeColor(r.type)">
               <b>{{ typeLabel(r.type) }}</b>
+              <el-tag v-if="r.type === 'labs' && r.abnormal && r.abnormal.length" type="danger" size="small" style="margin-left:4px">异常 {{ r.abnormal.length }} 项</el-tag>
               <span v-if="renderRecord(r)" style="color:#4e5969"> · {{ renderRecord(r) }}</span>
               <img v-if="r.photoUrl" :src="r.photoUrl" style="display:block;margin-top:6px;max-width:180px;border-radius:6px" />
               <p v-if="r.note" style="margin:4px 0 0;color:#86909c;font-size:12px">{{ r.note }}</p>
@@ -99,7 +100,9 @@
             <el-col :span="12"><h5>体重 / BMI</h5><TrendChart :series="chartWeight" /></el-col>
             <el-col :span="12"><h5>血压 (mmHg)</h5><TrendChart :series="chartBp" /></el-col>
             <el-col :span="12"><h5>空腹血糖 (mmol/L)</h5><TrendChart :series="chartGlucose" /></el-col>
-            <el-col :span="12"><h5>肝功能 (U/L)</h5><TrendChart :series="chartLabs" /></el-col>
+            <el-col :span="12"><h5>肝功能</h5><TrendChart :series="chartLabs" /></el-col>
+            <el-col :span="12"><h5>血脂 (mmol/L)</h5><TrendChart :series="chartLipid" /></el-col>
+            <el-col :span="12"><h5>血糖 / 糖化 / 尿酸</h5><TrendChart :series="chartMetabolic" /></el-col>
           </el-row>
         </el-tab-pane>
       </el-tabs>
@@ -146,16 +149,28 @@
       </template>
     </el-dialog>
 
-    <!-- 录入检验 -->
-    <el-dialog v-model="labVisible" title="录入肝功能检验" width="420px">
-      <el-date-picker v-model="labForm.examDate" type="date" value-format="YYYY-MM-DD" placeholder="检验日期" style="width:100%" />
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
-        <el-input-number v-model="labForm.alt" :min="0" :max="5000" placeholder="ALT" controls-position="right" style="width:100%" />
-        <el-input-number v-model="labForm.ast" :min="0" :max="5000" placeholder="AST" controls-position="right" style="width:100%" />
-        <el-input-number v-model="labForm.ggt" :min="0" :max="5000" placeholder="GGT" controls-position="right" style="width:100%" />
-        <el-input-number v-model="labForm.tg" :min="0" :max="100" :step="0.1" placeholder="甘油三酯" controls-position="right" style="width:100%" />
+    <!-- 录入检验（辅助检查 14 项） -->
+    <el-dialog v-model="labVisible" title="录入辅助检查（检验）" width="680px">
+      <el-date-picker v-model="labForm.examDate" type="date" value-format="YYYY-MM-DD" placeholder="检查日期" style="width:220px" />
+      <div v-for="g in labGroups" :key="g.group" class="lab-group">
+        <div class="lab-group-title">{{ g.group }}</div>
+        <div class="lab-grid">
+          <div v-for="f in g.fields" :key="f.key" class="lab-field">
+            <div class="lab-field-head">
+              <span class="lab-label">{{ f.label }}</span>
+              <span class="lab-ref">参考 {{ f.ref[0] }}–{{ f.ref[1] }} {{ f.unit }}</span>
+            </div>
+            <el-input-number
+              v-model="labForm[f.key]"
+              :min="f.min" :max="f.max" :step="labStep(f)"
+              controls-position="right" placeholder="未测" style="width:100%"
+              :class="{ 'is-abnormal': labAbnormal(f) }"
+            />
+          </div>
+        </div>
       </div>
       <template #footer>
+        <span v-if="labFilled" style="margin-right:auto;font-size:12px;color:#f56c6c">红色数值表示超出参考范围，可正常保存</span>
         <el-button @click="labVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveLab">保存</el-button>
       </template>
@@ -172,7 +187,7 @@ import { useAuthStore } from '../stores/auth';
 import { fmtTime, fmtDate, todayStr } from '../utils/format';
 import RiskTag from '../components/RiskTag.vue';
 import TrendChart from '../components/TrendChart.vue';
-import { MEAL_LABELS, INTENSITY_LABELS } from '@flwb/shared';
+import { MEAL_LABELS, INTENSITY_LABELS, LAB_FIELDS } from '@flwb/shared';
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -209,14 +224,39 @@ const mdtVisible = ref(false);
 const mdtForm = reactive({ reason: '', specialists: [] });
 const experts = ref([]);
 const labVisible = ref(false);
-const labForm = reactive({ examDate: todayStr(), alt: undefined, ast: undefined, ggt: undefined, tg: undefined });
+const emptyLab = () => {
+  const o = { examDate: todayStr() };
+  for (const f of LAB_FIELDS) o[f.key] = undefined;
+  return o;
+};
+const labForm = reactive(emptyLab());
+// 检验字段按 group 分组（保持 LAB_FIELDS 顺序分组展示）
+const labGroups = computed(() => {
+  const map = new Map();
+  for (const f of LAB_FIELDS) {
+    if (!map.has(f.group)) map.set(f.group, []);
+    map.get(f.group).push(f);
+  }
+  return [...map.entries()].map(([group, fields]) => ({ group, fields }));
+});
+const labFilled = computed(() => LAB_FIELDS.some(f => labForm[f.key] != null));
+// 输入值是否超出参考范围（实时红标预览，不阻断提交）
+function labAbnormal(f) {
+  const v = labForm[f.key];
+  if (v == null || v === '') return false;
+  return Number(v) < f.ref[0] || Number(v) > f.ref[1];
+}
+// 参考范围含小数则步长 0.1，否则整数
+function labStep(f) {
+  return Number.isInteger(f.ref[0]) && Number.isInteger(f.ref[1]) ? 1 : 0.1;
+}
 
 const TYPE_MAP = {
   diet: '饮食记录', exercise: '运动记录', vitals: '随访指标', guidance: '个案指导',
-  education: '健康宣教', assessment: '专病评估', labs: '肝功能检验'
+  education: '健康宣教', assessment: '专病评估', labs: '辅助检查'
 };
 const typeLabel = (t) => TYPE_MAP[t] || t;
-const typeColor = (t) => ({ diet: 'success', exercise: 'warning', vitals: 'primary', guidance: 'danger', education: 'info', assessment: 'primary', labs: 'danger' }[t] || 'info');
+const typeColor = (t) => ({ diet: 'success', exercise: 'warning', vitals: 'primary', guidance: 'danger', education: 'info', assessment: 'primary', labs: 'primary' }[t] || 'info');
 
 function renderRecord(r) {
   switch (r.type) {
@@ -236,11 +276,13 @@ function renderRecord(r) {
     case 'assessment': return r.title || '评估报告';
     case 'labs': {
       const parts = [];
-      if (r.alt != null) parts.push(`ALT ${r.alt}`);
-      if (r.ast != null) parts.push(`AST ${r.ast}`);
-      if (r.ggt != null) parts.push(`GGT ${r.ggt}`);
-      if (r.tg != null) parts.push(`TG ${r.tg}`);
-      return parts.join('，');
+      for (const f of LAB_FIELDS) {
+        const v = r[f.key];
+        if (v == null) continue;
+        const flag = (r.abnormal || []).includes(f.key) ? (Number(v) > f.ref[1] ? '↑' : '↓') : '';
+        parts.push(`${f.label} ${v}${flag}`);
+      }
+      return parts.length ? parts.join('，') : (r.note || '检验记录');
     }
     default: return '';
   }
@@ -289,11 +331,15 @@ const chartBp = computed(() => [
 const chartGlucose = computed(() => [
   { name: '空腹血糖', data: trend.points.filter((x) => x.glucose != null).map((x) => [x.ts, x.glucose]) }
 ]);
-const chartLabs = computed(() => [
-  { name: 'ALT', data: trend.labs.filter((x) => x.alt != null).map((x) => [x.ts, x.alt]) },
-  { name: 'AST', data: trend.labs.filter((x) => x.ast != null).map((x) => [x.ts, x.ast]) },
-  { name: 'GGT', data: trend.labs.filter((x) => x.ggt != null).map((x) => [x.ts, x.ggt]) }
-]);
+function makeLabChart(keys) {
+  return keys.map((k) => {
+    const f = LAB_FIELDS.find((x) => x.key === k);
+    return { name: f ? f.label : k, data: trend.labs.filter((x) => x[k] != null).map((x) => [x.ts, x[k]]) };
+  });
+}
+const chartLabs = computed(() => makeLabChart(['alt', 'ast', 'ggt', 'alp', 'tbil']));
+const chartLipid = computed(() => makeLabChart(['tg', 'tc', 'ldl', 'hdl']));
+const chartMetabolic = computed(() => makeLabChart(['fpg', 'hba1c', 'ua']));
 
 async function saveFollowup() {
   if (!fuDate.value) return ElMessage.warning('请选择日期');
@@ -346,12 +392,15 @@ async function initiateMdt() {
 }
 
 async function saveLab() {
+  if (!labFilled.value) return ElMessage.warning('请至少填写一项检验指标');
   saving.value = true;
   try {
     await api.addLab(pid, { ...labForm });
     ElMessage.success('检验结果已录入');
     labVisible.value = false;
+    Object.assign(labForm, emptyLab());
     loadTrend();
+    loadRecords(false);
   } catch (e) { ElMessage.error(e.message); } finally { saving.value = false; }
 }
 
@@ -373,4 +422,13 @@ onMounted(async () => {
 .head-line.sub { color: #86909c; font-size: 13px; }
 .actions { display: flex; gap: 4px; flex-wrap: wrap; }
 h4, h5 { margin: 12px 0 8px; }
+.lab-group { margin-top: 14px; }
+.lab-group-title { font-size: 14px; font-weight: 600; color: #1d2129; margin-bottom: 8px; padding-left: 8px; border-left: 3px solid #1668dc; }
+.lab-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px 12px; }
+.lab-field { display: flex; flex-direction: column; gap: 4px; }
+.lab-field-head { display: flex; align-items: baseline; justify-content: space-between; }
+.lab-label { font-size: 13px; color: #4e5969; }
+.lab-ref { font-size: 11px; color: #86909c; }
+.lab-field :deep(.el-input-number.is-abnormal .el-input__wrapper) { box-shadow: 0 0 0 1px #f56c6c inset; }
+.lab-field :deep(.el-input-number.is-abnormal .el-input__inner) { color: #f56c6c; }
 </style>

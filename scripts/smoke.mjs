@@ -190,5 +190,33 @@ console.log('\n[16] 定时任务');
 const cron = await call('server/cron/followup-remind.js', {});
 check('cron run', cron.code === 0 && cron.data.reminded >= 0, cron.data);
 
+console.log('\n[17] 辅助检查（检验）：录入 / 异常标记 / 越界 / 越权');
+// 正常值 + 3 个异常样例（alt 偏高、fpg 偏高、hdl 偏低）验证异常标记方向
+const labGood = await call('server/patients/[id]/labs.js', { ...docAuth, method: 'POST', url: '/api/patients/p_1009/labs', query: { id: 'p_1009' }, body: {
+  examDate: '2026-09-08',
+  alt: 66, ast: 25, ggt: 30, alp: 60, tbil: 12, alb: 45,
+  fpg: 7.5, hba1c: 5.5, tg: 1.2, tc: 4.5, ldl: 2.5, hdl: 0.8, ua: 300, plt: 200
+} });
+check('lab create', labGood.code === 0, labGood);
+check('abnormal = alt/fpg/hdl（高/高/低）', labGood.code === 0 && labGood.data.abnormal.length === 3 && ['alt', 'fpg', 'hdl'].every(k => labGood.data.abnormal.includes(k)), labGood.data?.abnormal);
+
+const labList = await call('server/patients/[id]/labs.js', { ...docAuth, url: '/api/patients/p_1009/labs', query: { id: 'p_1009' } });
+check('lab list returns record with abnormal', labList.code === 0 && labList.data.items.length >= 1 && Array.isArray(labList.data.items[0].abnormal), labList.data?.items?.length);
+
+const labTrend = await call('server/patients/[id]/trend.js', { ...docAuth, url: '/api/patients/p_1009/trend', query: { id: 'p_1009', days: '90' } });
+check('trend labs contains 14 项指标', labTrend.code === 0 && labTrend.data.labs.length >= 1 && labTrend.data.labs[labTrend.data.labs.length - 1].fpg === 7.5, labTrend.data?.labs?.length);
+
+const labOver = await call('server/patients/[id]/labs.js', { ...docAuth, method: 'POST', url: '/api/patients/p_1009/labs', query: { id: 'p_1009' }, body: { examDate: '2026-09-08', alt: 99999 } });
+check('lab out-of-range -> 422', labOver.code === 42200, labOver);
+
+const labEmpty = await call('server/patients/[id]/labs.js', { ...docAuth, method: 'POST', url: '/api/patients/p_1009/labs', query: { id: 'p_1009' }, body: { examDate: '2026-09-08' } });
+check('lab require at least one -> 422', labEmpty.code === 42200, labEmpty);
+
+const labPatientHack = await call('server/patients/[id]/labs.js', { ...patAuth, method: 'POST', url: '/api/patients/p_1009/labs', query: { id: 'p_1009' }, body: { examDate: '2026-09-08', alt: 30 } });
+check('patient cannot create lab -> 403', labPatientHack.code === 40300, labPatientHack);
+
+const labNurseHack = await call('server/patients/[id]/labs.js', { ...nurseAuth, method: 'POST', url: '/api/patients/p_1009/labs', query: { id: 'p_1009' }, body: { examDate: '2026-09-08', alt: 30 } });
+check('nurse cannot create lab -> 403', labNurseHack.code === 40300, labNurseHack);
+
 console.log(`\n========== 冒烟测试结果: ${passed} 通过 / ${failed} 失败 ==========`);
 process.exit(failed ? 1 : 0);

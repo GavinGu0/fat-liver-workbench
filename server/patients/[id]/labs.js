@@ -1,10 +1,15 @@
 'use strict';
-/** 肝功能等检验指标：GET 查询（医护/本人）；POST 录入（仅主管医生），供趋势分析Tab展示 */
+/**
+ * 辅助检查（检验）指标（结构化电子病历「六、辅助检查」）：
+ * GET 查询（医护/本人）；POST 录入（仅主管医生），供趋势分析Tab展示。
+ * 录入数据按 LAB_FIELDS 14 项检验指标转存，超出参考范围自动标记 abnormal（不阻断，仅红标）。
+ */
 const { defineHandler } = require('../../_lib/handler');
 const { getDb, K } = require('../../_lib/storage');
 const { requireDoctorOwn, requirePatientRead } = require('../../_lib/patient-access');
 const { updatePatient, audit } = require('../../_lib/services');
 const { parse, labsSchema } = require('../../_lib/validate');
+const { LAB_FIELDS, labAbnormalKeys } = require('@flwb/shared');
 
 module.exports = defineHandler({
   auth: 'staff_or_self',
@@ -31,15 +36,17 @@ module.exports = defineHandler({
       id: 'lab_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       ts: Date.now(),
       examDate: input.examDate,
-      alt: input.alt ?? null,
-      ast: input.ast ?? null,
-      ggt: input.ggt ?? null,
-      tg: input.tg ?? null,
+      note: input.note || null,
       by: user.name
     };
+    for (const f of LAB_FIELDS) {
+      record[f.key] = input[f.key] ?? null;
+    }
+    record.abnormal = labAbnormalKeys(record);
+
     await db.zadd(K.labs(pid), record.ts, JSON.stringify(record));
     await updatePatient(pid, (p) => { p.lastActivityAt = Date.now(); }, null);
-    await audit('labs.create', { operator: user.uid, patient_id: pid });
+    await audit('labs.create', { operator: user.uid, patient_id: pid, abnormal: record.abnormal });
     return record;
   }
 });

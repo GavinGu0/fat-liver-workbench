@@ -3,7 +3,7 @@
 const { z } = require('zod');
 const { ApiError } = require('./response');
 const {
-  MEALS, EXERCISE_TYPES, INTENSITIES, GUIDANCE_METHODS, GUIDANCE_CATEGORIES, MED_RANGES
+  MEALS, EXERCISE_TYPES, INTENSITIES, GUIDANCE_METHODS, GUIDANCE_CATEGORIES, MED_RANGES, LAB_FIELDS
 } = require('@flwb/shared');
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
@@ -53,13 +53,17 @@ const vitalsSchema = z.object({
   }
 });
 
-const labsSchema = z.object({
-  recordDate: dateStr,
-  alt: numInRange('alt').optional().nullable(),
-  ast: numInRange('ast').optional().nullable(),
-  ggt: numInRange('ggt').optional().nullable(),
-  tg: numInRange('tg').optional().nullable(),
-  note: z.string().max(200).optional().nullable()
+/**
+ * 辅助检查（检验）录入：14项检验指标（LAB_FIELDS 派生）+ 检查日期 + 备注。
+ * superRefine 保证至少填写一项；各指标硬校验医学合理范围（MED_RANGES）。
+ */
+const labsShape = { examDate: dateStr, note: z.string().max(200).optional().nullable() };
+for (const f of LAB_FIELDS) {
+  labsShape[f.key] = numInRange(f.key).optional().nullable();
+}
+const labsSchema = z.object(labsShape).superRefine((val, ctx) => {
+  const hasAny = LAB_FIELDS.some(f => val[f.key] !== null && val[f.key] !== undefined);
+  if (!hasAny) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '至少填写一项检验指标' });
 });
 
 const followupSchema = z.object({

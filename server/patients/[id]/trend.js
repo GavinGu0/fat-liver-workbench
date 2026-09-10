@@ -3,6 +3,7 @@
 const { defineHandler } = require('../../_lib/handler');
 const { getDb, K } = require('../../_lib/storage');
 const { requirePatientRead } = require('../../_lib/patient-access');
+const { LAB_FIELDS } = require('@flwb/shared');
 
 const DAY = 86400000;
 
@@ -23,7 +24,11 @@ function seriesOf(points) {
 }
 
 function labSeries(points) {
-  return points.map(p => ({ ts: p.ts, alt: p.alt ?? null, ast: p.ast ?? null, ggt: p.ggt ?? null, tg: p.tg ?? null }));
+  return points.map(p => {
+    const out = { ts: p.ts };
+    for (const f of LAB_FIELDS) out[f.key] = p[f.key] ?? null;
+    return out;
+  });
 }
 
 module.exports = defineHandler({
