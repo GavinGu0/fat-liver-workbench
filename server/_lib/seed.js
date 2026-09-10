@@ -8,7 +8,7 @@
 const { randomUUID } = require('node:crypto');
 const { getDb, K, dateStr, setNxEx, withLock } = require('./storage');
 const { clientHashOf, hashPassword } = require('./auth');
-const { calcBmi } = require('@flwb/shared');
+const { calcBmi, riskStratify, LAB_FIELDS, labAbnormalKeys } = require('@flwb/shared');
 const logger = require('./logger');
 
 const DAY = 86400000;
@@ -287,6 +287,199 @@ async function seedConfigs(db) {
   }
 }
 
+/* ==================== v2：医生端临床演示数据（专病建档/筛查/预警/随访执行/检验） ==================== */
+
+/** 演示专病档案配置（pid → 差异字段） */
+const MEDREC_SEEDS = {
+  p_1001: {
+    ultrasound: '重度脂肪肝', fibroScanCap: 320, fibroScanE: 9.2, waist: 98, sbp: 134, dbp: 86,
+    alt: 86, ast: 62, ggt: 95, tg: 2.8, fpg: 5.9,
+    t2dm: '否', hypertension: '是', dyslipidemia: '是', hyperuricemia: '否', metabolicSyndrome: '是', cvd: '否',
+    dietHabit: '高脂', activityLevel: '久坐', smokingHistory: '已戒烟', drinkingHistory: '偶尔', weeklyAlcoholGrams: 20,
+    chiefComplaint: '乏力、肝区不适2月', presentIllness: '2月前无明显诱因出现乏力伴肝区隐痛，体检超声示重度脂肪肝，肝功能异常。'
+  },
+  p_1002: {
+    ultrasound: '中度脂肪肝', fibroScanCap: 285, fibroScanE: 7.1, waist: 86, sbp: 124, dbp: 80,
+    alt: 68, ast: 45, ggt: 62, tg: 2.1, fpg: 5.3,
+    t2dm: '否', hypertension: '否', dyslipidemia: '是', hyperuricemia: '否', metabolicSyndrome: '否', cvd: '否',
+    dietHabit: '高糖', activityLevel: '轻度', smokingHistory: '从不', drinkingHistory: '从不', weeklyAlcoholGrams: 0,
+    chiefComplaint: '体检发现转氨酶升高1月', presentIllness: '1月前体检发现ALT升高，超声示中度脂肪肝，无特殊不适。'
+  },
+  p_1005: {
+    ultrasound: '轻度脂肪肝', fibroScanCap: 245, fibroScanE: 5.2, waist: 95, sbp: 126, dbp: 82,
+    alt: 38, ast: 30, ggt: 42, tg: 1.6, fpg: 5.1,
+    t2dm: '否', hypertension: '否', dyslipidemia: '否', hyperuricemia: '否', metabolicSyndrome: '否', cvd: '否',
+    dietHabit: '高脂', activityLevel: '久坐', smokingHistory: '吸烟中', drinkingHistory: '经常', weeklyAlcoholGrams: 140,
+    chiefComplaint: '超声提示脂肪肝，无症状', presentIllness: '单位体检超声示轻度脂肪肝，肝功能正常，无不适。'
+  }
+};
+
+const RISK_LABELS = { high: '高', mid: '中', low: '低' };
+const YN = (v) => (v ? '是' : '否');
+
+async function seedClinicalV2(db, docId) {
+  const flagKey = K.flag('seeded_v2');
+  try { if (await db.get(flagKey)) return; } catch { /* ignore */ }
+  const docName = '郭明泽';
+
+  await withLock('seed_v2', 30, async () => {
+    if (await db.get(flagKey)) return;
+
+    /* 1) 专病建档：p_1001（高）/ p_1002（中）/ p_1005（低） */
+    for (const [pid, extra] of Object.entries(MEDREC_SEEDS)) {
+      const s = PATIENT_SEEDS.find(x => x.id === pid);
+      const bmi = calcBmi(s.weight, s.height);
+      const rec = {
+        patientId: pid, createdBy: docId, createdByName: docName,
+        createdAt: now() - (s.daysAgo - 1) * DAY, updatedAt: now() - (s.daysAgo - 1) * DAY, version: 1,
+        name: s.name, gender: s.gender, birthDate: null, idCard: '', phone: '',
+        visitNumber: 'V2026' + String(1000 + Math.abs(hashStr(pid)) % 8999), visitDate: dateStr(-(s.daysAgo - 1)), visitDept: '肝病科', insuranceType: '职工医保',
+        height: s.height, weight: s.weight, waist: extra.waist, sbp: extra.sbp, dbp: extra.dbp,
+        smokingHistory: extra.smokingHistory, drinkingHistory: extra.drinkingHistory, weeklyAlcoholGrams: extra.weeklyAlcoholGrams,
+        dietHabit: extra.dietHabit, activityLevel: extra.activityLevel,
+        chiefComplaint: extra.chiefComplaint, presentIllness: extra.presentIllness, discoveryType: '无症状/体检发现',
+        t2dm: YN(extra.t2dm === '是'), hypertension: YN(extra.hypertension === '是'), dyslipidemia: YN(extra.dyslipidemia === '是'),
+        hyperuricemia: YN(extra.hyperuricemia === '是'), metabolicSyndrome: YN(extra.metabolicSyndrome === '是'), cvd: YN(extra.cvd === '是'),
+        otherChronic: '', medicationHistory: s.ph, skinSigns: '', abdominalExam: '腹软，无压痛，肝脾肋下未及',
+        ultrasound: extra.ultrasound, fibroScanCap: extra.fibroScanCap, fibroScanE: extra.fibroScanE,
+        riskLevel: s.risk, riskReason: '', interventionDiet: '控制总热量，戒含糖饮料，主食粗细搭配', interventionExercise: '每周5次中等强度有氧运动，每次30-60分钟',
+        weightGoal: Math.round((s.weight * 0.9) * 10) / 10, interventionMedication: '', revisitPlan: '', nursingProblems: '', healthEducation: '已宣教脂肪肝饮食十大原则与运动处方',
+        bmi
+      };
+      for (const f of LAB_FIELDS) rec[f.key] = extra[f.key] ?? null;
+      const strat = riskStratify(rec);
+      rec.riskScore = strat.score;
+      rec.riskModelReasons = strat.reasons;
+      rec.riskStratifiedAt = rec.createdAt;
+      rec.riskStratifiedBy = docName;
+      rec.riskReason = `模型评分 ${strat.score} 分（${strat.risk === 'high' ? '高' : strat.risk === 'mid' ? '中' : '低'}危）：${strat.reasons.slice(0, 3).join('；')}`;
+
+      await db.set(K.medrec(pid), JSON.stringify(rec));
+      const praw = await db.get(K.patient(pid));
+      if (praw) {
+        const p = typeof praw === 'string' ? JSON.parse(praw) : praw;
+        p.archivedAt = rec.createdAt;
+        p.medicalRecordId = pid;
+        p.mainDiagnosis = p.mainDiagnosis || '脂肪肝（专病建档）';
+        await db.set(K.patient(pid), JSON.stringify(p));
+      }
+      await db.lpush(K.archive(pid), JSON.stringify({
+        id: 'ar_seed_mr_' + pid, ts: rec.createdAt, kind: 'archive', type: 'medical_record',
+        title: `脂肪肝专病建档（v1）`, summary: `风险分层：${RISK_LABELS[s.risk]}风险（评分${strat.score}）；建档医生：${docName}`, by: docName
+      }));
+    }
+
+    /* 2) 检验记录（含异常值 → 驱动筛查/复查统计） */
+    const LAB_SEEDS = [
+      { pid: 'p_1001', daysAgo: 30, vals: { alt: 92, ast: 66, ggt: 102, tg: 3.0, fpg: 5.8, hdl: 0.9 } },
+      { pid: 'p_1001', daysAgo: 8, vals: { alt: 86, ast: 62, ggt: 95, tg: 2.8, fpg: 5.9, hdl: 0.92 } },
+      { pid: 'p_1002', daysAgo: 25, vals: { alt: 74, ast: 48, ggt: 66, tg: 2.3, fpg: 5.2 } },
+      { pid: 'p_1003', daysAgo: 20, vals: { alt: 118, ast: 90, ggt: 128, tg: 3.4, fpg: 7.6, hba1c: 8.2 } },
+      { pid: 'p_1008', daysAgo: 5, vals: { alt: 156, ast: 132, ggt: 180, tg: 4.6, fpg: 9.1, hba1c: 9.4 } },
+      { pid: 'p_1009', daysAgo: 10, vals: { alt: 58, ast: 42, ggt: 55, tg: 1.9, fpg: 6.2 } }
+    ];
+    for (const x of LAB_SEEDS) {
+      const record = {
+        id: 'lab_seed_' + x.pid + '_' + x.daysAgo, ts: now() - x.daysAgo * DAY + 9 * 3600 * 1000,
+        examDate: dateStr(-x.daysAgo), note: '', by: docName
+      };
+      for (const f of LAB_FIELDS) record[f.key] = x.vals[f.key] ?? null;
+      record.abnormal = labAbnormalKeys(record);
+      await db.zadd(K.labs(x.pid), record.ts, JSON.stringify(record));
+    }
+
+    /* 3) 筛查案例：p_1005 待处理（BMI超重+超声）/ p_1008 待处理（检验+肥胖）/ p_1003 已纳入 */
+    const SC_SEEDS = [
+      {
+        id: 'sc_seed_1005', pid: 'p_1005', status: 'pending', source: 'scan', daysAgo: 2, suggestedRisk: 'mid',
+        evidence: [
+          { rule: 'BMI>=24（超重）', detail: `BMI=${calcBmi(90, 178)} 达超重标准`, source: 'bmi', ts: now() - 2 * DAY },
+          { rule: '超声关键词「脂肪肝」', detail: '超声报告命中关键词「脂肪肝」', source: 'pacs', ts: now() - 2 * DAY }
+        ]
+      },
+      {
+        id: 'sc_seed_1008', pid: 'p_1008', status: 'pending', source: 'lis', daysAgo: 1, suggestedRisk: 'high',
+        evidence: [
+          { rule: 'ALT>40', detail: 'ALT=156>40', source: 'lis', ts: now() - 1 * DAY },
+          { rule: 'AST>40', detail: 'AST=132>40', source: 'lis', ts: now() - 1 * DAY },
+          { rule: 'BMI>=28（肥胖）', detail: `BMI=${calcBmi(95, 180)} 达肥胖标准`, source: 'bmi', ts: now() - 1 * DAY }
+        ]
+      },
+      {
+        id: 'sc_seed_1003', pid: 'p_1003', status: 'accepted', source: 'scan', daysAgo: 15, suggestedRisk: 'high',
+        decisionNote: '脂肪性肝炎合并2型糖尿病，纳入强化管理', decidedBy: docName,
+        evidence: [
+          { rule: 'ALT>40', detail: 'ALT=118>40', source: 'lis', ts: now() - 15 * DAY },
+          { rule: 'BMI>=28（肥胖）', detail: `BMI=${calcBmi(85, 170)} 达肥胖标准`, source: 'bmi', ts: now() - 15 * DAY }
+        ]
+      }
+    ];
+    for (const c of SC_SEEDS) {
+      const s = PATIENT_SEEDS.find(x => x.id === c.pid);
+      const doc = {
+        id: c.id, patientId: c.pid, patientName: s.name, phone: '', docId,
+        source: c.source, evidence: c.evidence, suggestedRisk: c.suggestedRisk,
+        status: c.status, decisionNote: c.decisionNote || null,
+        decidedBy: c.decidedBy || null, decidedAt: c.status === 'accepted' ? now() - (c.daysAgo - 1) * DAY : null,
+        ts: now() - c.daysAgo * DAY
+      };
+      await db.set(K.screening(c.id), JSON.stringify(doc));
+      await db.zadd(K.screeningIdx(docId), doc.ts, c.id);
+      await db.zadd(K.screeningAll, doc.ts, c.id);
+      if (c.status === 'pending') await db.set(K.screeningPid(c.pid) + ':open', c.id);
+    }
+
+    /* 4) 预警提醒：2条未处理 + 1条已处理 */
+    const ALERT_SEEDS = [
+      {
+        id: 'al_seed_1', pid: 'p_1008', level: 'high', type: 'lab_abnormal', daysAgo: 1, status: 'open',
+        title: '检验异常筛查阳性：周涛', content: '新检验记录命中 3 项筛查规则（ALT>40、AST>40、GGT>50），建议复核纳入管理。', link: '/screening'
+      },
+      {
+        id: 'al_seed_2', pid: 'p_1005', level: 'mid', type: 'followup_overdue', daysAgo: 1, status: 'open',
+        title: '随访逾期：张伟', content: '患者 张伟 的随访（原定 ' + dateStr(-10) + '）已逾期，请尽快电话随访或标记失访。', link: '/followup'
+      },
+      {
+        id: 'al_seed_3', pid: 'p_1001', level: 'high', type: 'high_risk_no_mdt', daysAgo: 6, status: 'handled',
+        title: '高风险患者建议 MDT 会诊：刘志强', content: '专病建档风险分层为高危。建议发起营养科/内分泌科多学科会诊。',
+        link: '/patients/p_1001', handlerNote: '已电话联系患者，下周安排 MDT', handledBy: docName
+      }
+    ];
+    for (const a of ALERT_SEEDS) {
+      const s = PATIENT_SEEDS.find(x => x.id === a.pid);
+      const doc = {
+        id: a.id, docId, patientId: a.pid, patientName: s.name, level: a.level, type: a.type,
+        title: a.title, content: a.content, link: a.link, status: a.status,
+        handlerNote: a.handlerNote || null, handledBy: a.handledBy || null,
+        handledAt: a.status === 'handled' ? now() - (a.daysAgo - 1) * DAY : null,
+        ts: now() - a.daysAgo * DAY, count: 1
+      };
+      await db.set(K.alert(a.id), JSON.stringify(doc));
+      await db.zadd(K.alertIdx(docId), doc.ts, a.id);
+    }
+    await db.set(K.alertUnread(docId), ALERT_SEEDS.filter(a => a.status === 'open').length);
+
+    /* 5) 随访执行记录：p_1001（5天前）/ p_1002（12天前） */
+    const FU_SEEDS = [
+      { pid: 'p_1001', daysAgo: 5, dueDaysAgo: 35, method: '门诊', outcome: '体重82kg（-2.5kg），血压达标，已调整饮食方案', conclusion: '继续当前干预，1个月后复查肝功能', nextOffset: 1 },
+      { pid: 'p_1002', daysAgo: 12, dueDaysAgo: 23, method: '电话', outcome: '自述执行饮食运动方案良好，体重68kg（-1kg）', conclusion: '3个月后复查血脂与肝脏超声', nextOffset: 2 }
+    ];
+    for (const f of FU_SEEDS) {
+      const rec = {
+        id: 'fu_seed_' + f.pid, ts: now() - f.daysAgo * DAY, dueDate: dateStr(-f.dueDaysAgo),
+        method: f.method, outcome: f.outcome, conclusion: f.conclusion, nextDate: dateStr(f.nextOffset), by: docName
+      };
+      await db.lpush(K.followupRec(f.pid), JSON.stringify(rec));
+    }
+
+    await setNxEx(flagKey, '1', 365 * 24 * 3600);
+    logger.info('seed.v2.done', { medrecs: Object.keys(MEDREC_SEEDS).length, screenings: SC_SEEDS.length, alerts: ALERT_SEEDS.length });
+  }, 15000).catch(e => {
+    if (String(e.message).includes('繁忙')) return; // 其他实例正在播种
+    throw e;
+  });
+}
+
 let _seedPromise = null;
 
 /** 每个 API 请求都会调用；首次执行播种，之后进程内直接返回 */
@@ -303,30 +496,34 @@ function ensureSeed() {
 
 async function runSeed() {
   const db = await getDb();
-  const flagKey = K.flag('seeded_v1');
-  try {
-    const done = await db.get(flagKey);
-    if (done) return;
-  } catch { /* ignore */ }
-
   const docId = 'u_doc_gbmz';
-  try {
-    await withLock('seed', 30, async () => {
-      const done = await db.get(flagKey);
-      if (done) return;
-      await seedConfigs(db);
-      await seedUsers(db, docId);
-      await seedPatients(db, docId);
-      await seedRecords(db);
-      await seedMessagesAndPlans(db);
-      await seedClinical(db, docId);
-      await setNxEx(flagKey, '1', 365 * 24 * 3600);
-      logger.info('seed.done', { patients: PATIENT_SEEDS.length });
-    }, 15000);
-  } catch (e) {
-    if (String(e.message).includes('繁忙')) return; // 其他实例正在播种
-    throw e;
+
+  /* v1 基础数据（账号/患者/记录），未播种时执行 */
+  const v1Flag = K.flag('seeded_v1');
+  let v1Done = null;
+  try { v1Done = await db.get(v1Flag); } catch { /* ignore */ }
+  if (!v1Done) {
+    try {
+      await withLock('seed', 30, async () => {
+        const done = await db.get(v1Flag);
+        if (done) return;
+        await seedConfigs(db);
+        await seedUsers(db, docId);
+        await seedPatients(db, docId);
+        await seedRecords(db);
+        await seedMessagesAndPlans(db);
+        await seedClinical(db, docId);
+        await setNxEx(v1Flag, '1', 365 * 24 * 3600);
+        logger.info('seed.done', { patients: PATIENT_SEEDS.length });
+      }, 15000);
+    } catch (e) {
+      if (String(e.message).includes('繁忙')) return; // 其他实例正在播种
+      throw e;
+    }
   }
+
+  /* v2 医生端临床演示数据（独立幂等；老数据也补充播种） */
+  await seedClinicalV2(db, docId);
 }
 
 module.exports = { ensureSeed, DEFAULT_CONFIGS };

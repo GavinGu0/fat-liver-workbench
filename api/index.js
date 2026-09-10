@@ -42,6 +42,17 @@ const ROUTES = [
   ['nurse/education', require('../server/nurse/education.js')],
   ['nurse/guidance', require('../server/nurse/guidance.js')],
   ['mdt', require('../server/mdt/index.js')],
+  ['medical-records', require('../server/medical-records.js')],
+  ['screening/[id]/decision', require('../server/screening/[id]/decision.js')],
+  ['screening', require('../server/screening/index.js')],
+  ['alerts/read-all', require('../server/alerts/read-all.js')],
+  ['alerts/[id]/handle', require('../server/alerts/[id]/handle.js')],
+  ['alerts', require('../server/alerts/index.js')],
+  ['followups/remind', require('../server/followups/remind.js')],
+  ['followups/[id]/execute', require('../server/followups/[id]/execute.js')],
+  ['followups/[id]/lost', require('../server/followups/[id]/lost.js')],
+  ['followups', require('../server/followups/index.js')],
+  ['quality', require('../server/quality.js')],
   ['reports/[id]', require('../server/reports/[id]/index.js')],
   ['cron/followup-remind', require('../server/cron/followup-remind.js')]
 ];
@@ -49,7 +60,7 @@ const ROUTES = [
 const COMPILED = ROUTES.map(([pattern, handler]) => {
   const segs = pattern.split('/');
   const staticCount = segs.filter(s => !s.startsWith('[')).length;
-  return { segs, staticCount, handler };
+  return { pattern, segs, staticCount, handler };
 }).sort((a, b) => b.staticCount - a.staticCount || b.segs.length - a.segs.length);
 
 function matchRoute(pathname) {

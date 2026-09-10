@@ -7,7 +7,8 @@
 const { defineHandler } = require('./_lib/handler');
 const { getDb, K, dateStr } = require('./_lib/storage');
 const { getPatient } = require('./_lib/services');
-const { ADVISORY } = require('@flwb/shared');
+const { listAlerts } = require('./_lib/clinic');
+const { ADVISORY, followupStatusOf } = require('@flwb/shared');
 
 const DAY = 86400000;
 
@@ -98,6 +99,31 @@ module.exports = defineHandler({
       }
     }));
 
+    // 预警提醒 + 筛查待处理（工作台红点/弹窗数据源）
+    const alerts = await listAlerts(user.uid, { status: 'open', limit: 5 });
+    const scIds = await db.zrevrange(K.screeningIdx(user.uid), 0, 99);
+    let screeningPending = 0;
+    for (const id of scIds) {
+      try {
+        const raw = await db.get(K.screening(id));
+        const c = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+        if (c && c.status === 'pending') screeningPending++;
+      } catch { continue; }
+    }
+
+    // 质控摘要：建档 / 失访 / 高风险占比（与 /quality 同口径的轻量版）
+    const lostCount = patients.filter(p => p.lostAt).length;
+    const archivedCount = patients.filter(p => p.archivedAt || p.medicalRecordId).length;
+
+    // 随访弹窗数据源：今日 + 3日内 + 逾期（含剩余天数）
+    const followupPopup = enriched
+      .map(x => {
+        const st = followupStatusOf(x.p.nextFollowupDate, today, x.p.lostAt);
+        return { ...lite(x.p), status: st.status, daysLeft: st.daysLeft };
+      })
+      .filter(x => ['overdue', 'today', 'soon3d'].includes(x.status))
+      .sort((a, b) => (a.daysLeft ?? 99) - (b.daysLeft ?? 99));
+
     const filledCount = enriched.filter(x => x.filled7d > 0).length;
     const fillRate = patients.length ? Math.round((filledCount / patients.length) * 100) : 0;
 
@@ -107,10 +133,22 @@ module.exports = defineHandler({
         totalPatients: patients.length,
         newThisWeek: createdAtWeek,
         fillRate,
-        pendingMdt: mdtPending.length
+        pendingMdt: mdtPending.length,
+        archived: archivedCount,
+        lost: lostCount,
+        highRisk: highRisk.length,
+        screeningPending,
+        alertsOpen: (alerts.counts && alerts.counts.open) || 0,
+        alertsUnread: alerts.unread || 0
       },
-      todos: { todayFollowups, soonFollowups, revisitQueue, mdtPending },
+      todos: { todayFollowups, soonFollowups, overdueFollowups: followupPopup.filter(x => x.status === 'overdue'), revisitQueue, mdtPending },
       quick: { highRisk, notFollowed, abnormal },
+      alerts: {
+        unread: alerts.unread || 0,
+        openCount: (alerts.counts && alerts.counts.open) || 0,
+        items: (alerts.items || []).slice(0, 5).map(a => ({ id: a.id, level: a.level, type: a.type, title: a.title, content: a.content, patientId: a.patientId, patientName: a.patientName, ts: a.ts, count: a.count }))
+      },
+      followupPopup,
       today
     };
   }

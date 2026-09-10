@@ -12,7 +12,12 @@ const routes = [
       { path: 'patients', name: 'patients', component: () => import('../views/Patients.vue'), meta: { title: '患者管理' } },
       { path: 'patients/:id', name: 'patientDetail', component: () => import('../views/PatientDetail.vue'), meta: { title: '患者详情' } },
       { path: 'mdt', name: 'mdt', component: () => import('../views/Mdt.vue'), meta: { title: 'MDT会诊', roles: ['doctor'] } },
-      { path: 'education', name: 'education', component: () => import('../views/nurse/Education.vue'), meta: { title: '宣教推送', roles: ['nurse'] } },
+      { path: 'medical-records', name: 'medicalRecord', component: () => import('../views/MedicalRecord.vue'), meta: { title: '专病建档', roles: ['doctor'] } },
+      { path: 'screening', name: 'screening', component: () => import('../views/Screening.vue'), meta: { title: '筛查识别', roles: ['doctor'] } },
+      { path: 'followup', name: 'followup', component: () => import('../views/Followup.vue'), meta: { title: '随访管理', roles: ['doctor'] } },
+      { path: 'alerts', name: 'alerts', component: () => import('../views/Alerts.vue'), meta: { title: '预警提醒', roles: ['doctor'] } },
+      { path: 'quality', name: 'quality', component: () => import('../views/Quality.vue'), meta: { title: '质量看板', roles: ['doctor'] } },
+      { path: 'education', name: 'education', component: () => import('../views/nurse/Education.vue'), meta: { title: '宣教推送', roles: ['doctor', 'nurse'] } },
       { path: 'guidance', name: 'guidance', component: () => import('../views/nurse/Guidance.vue'), meta: { title: '个案指导', roles: ['nurse'] } },
       { path: 'templates', name: 'templates', component: () => import('../views/nurse/Templates.vue'), meta: { title: '评估模板', roles: ['nurse'] } }
     ]

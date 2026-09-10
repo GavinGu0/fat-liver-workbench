@@ -27,6 +27,31 @@ export const api = {
   mdtList: () => http.get('/mdt'),
   mdtAction: (id, data) => http.post(`/patients/${id}/mdt`, data),
 
+  /* 医生 · 专病建档 */
+  medicalRecord: (patientId) => http.get('/medical-records', { params: { patientId } }),
+  saveMedicalRecord: (data) => http.post('/medical-records', data),
+
+  /* 医生 · 筛查识别 */
+  screeningList: (params) => http.get('/screening', { params }),
+  screeningRun: () => http.post('/screening', { action: 'run' }),
+  screeningManual: (data) => http.post('/screening', data),
+  screeningDecision: (id, data) => http.post(`/screening/${id}/decision`, data),
+
+  /* 医生 · 预警提醒 */
+  alerts: (params) => http.get('/alerts', { params }),
+  alertHandle: (id, data) => http.post(`/alerts/${id}/handle`, data),
+  alertsReadAll: () => http.post('/alerts/read-all'),
+
+  /* 医生 · 随访管理 */
+  followups: (params) => http.get('/followups', { params }),
+  followupRecords: (patientId) => http.get('/followups', { params: { patientId } }),
+  followupExecute: (id, data) => http.post(`/followups/${id}/execute`, data),
+  followupLost: (id, data) => http.post(`/followups/${id}/lost`, data),
+  followupRemind: (data) => http.post('/followups/remind', data),
+
+  /* 医生 · 质量看板 */
+  quality: (params) => http.get('/quality', { params }),
+
   /* 护理端 */
   education: () => http.get('/nurse/education'),
   pushEducation: (data) => http.post('/nurse/education', data),

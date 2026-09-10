@@ -9,6 +9,7 @@
 const { defineHandler } = require('../_lib/handler');
 const { getDb, K, dateStr } = require('../_lib/storage');
 const { getPatient, pushMsg, audit } = require('../_lib/services');
+const { raiseAlert } = require('../_lib/clinic');
 const { putJson, blobConfigured } = require('../_lib/blob');
 const { ApiError } = require('../_lib/response');
 const logger = require('../_lib/logger');
@@ -26,7 +27,51 @@ module.exports = defineHandler({
 
     const db = await getDb();
     const today = dateStr();
-    const result = { date: today, reminded: 0, cleaned: 0, backup: null };
+    const result = { date: today, reminded: 0, preReminded: 0, overdueAlerts: 0, cleaned: 0, backup: null };
+
+    // 0) 3日后随访预提醒：医生端弹窗数据源 + 医患双方站内信
+    const in3 = dateStr(3);
+    for (const pid of (await db.smembers(K.followupDue(in3))) || []) {
+      const p = await getPatient(pid);
+      if (!p || p.nextFollowupDate !== in3) continue;
+      if (p.docId) {
+        await pushMsg(p.docId, {
+          type: 'followup_pre_remind',
+          title: '随访提醒（3日后）',
+          content: `<p>患者 <b>${p.name}</b> 预约于 ${in3} 随访（${p.nextFollowupDate === in3 ? '距今3天' : ''}），请提前准备随访计划，或一键发送提醒给患者。</p>`,
+          from: '随访管理',
+          payload: { patientId: pid, date: in3 }
+        });
+        result.preReminded++;
+      }
+      if (p.userId) {
+        await pushMsg(p.userId, {
+          type: 'followup_pre_remind',
+          title: '随访即将开始',
+          content: `<p>您预约的随访将于 <b>3天后（${in3}）</b> 进行，请保持规律记录饮食与运动数据。</p>`,
+          from: '管理系统',
+          payload: { patientId: pid, date: in3 }
+        });
+      }
+    }
+
+    // 0.5) 逾期随访 → 医生预警（raiseAlert 幂等：同一患者同类型未处理时升级不重复）
+    for (let i = 1; i <= 7; i++) {
+      const d = dateStr(-i);
+      for (const pid of (await db.smembers(K.followupDue(d))) || []) {
+        const p = await getPatient(pid);
+        if (!p || p.nextFollowupDate !== d || !p.docId) continue;
+        await raiseAlert({
+          docId: p.docId, patientId: pid, patientName: p.name,
+          level: i >= 7 ? 'high' : 'mid',
+          type: 'followup_overdue',
+          title: `随访逾期：${p.name}`,
+          content: `患者 ${p.name} 的随访（原定 ${d}）已逾期 ${i} 天，请尽快电话随访或标记失访。`,
+          link: `/followup`
+        });
+        result.overdueAlerts++;
+      }
+    }
 
     // 1) 随访提醒：今日应随访
     const dueIds = await db.smembers(K.followupDue(today));

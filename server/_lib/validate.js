@@ -3,7 +3,8 @@
 const { z } = require('zod');
 const { ApiError } = require('./response');
 const {
-  MEALS, EXERCISE_TYPES, INTENSITIES, GUIDANCE_METHODS, GUIDANCE_CATEGORIES, MED_RANGES, LAB_FIELDS
+  MEALS, EXERCISE_TYPES, INTENSITIES, GUIDANCE_METHODS, GUIDANCE_CATEGORIES, MED_RANGES, LAB_FIELDS,
+  INSURANCE_TYPES, SMOKING_HISTORY, DRINKING_HISTORY, DIET_HABITS, ACTIVITY_LEVELS, YES_NO, DISCOVERY_TYPES
 } = require('@flwb/shared');
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
@@ -151,6 +152,113 @@ const smsSchema = z.object({
   phone: z.string().regex(/^1\d{10}$/, '手机号格式不正确')
 });
 
+/* ==================== 医生端扩展：专病建档 / 筛查 / 预警 / 随访 / 质控 ==================== */
+const idCardRe = /^[0-9Xx]{15,18}$/;
+const strMax = (n) => z.string().trim().max(n, `内容不能超过${n}字`).optional().nullable();
+
+/** 脂肪肝专病建档（结构化电子病历 全字段） */
+const medicalRecordSchema = z.object({
+  patientId: z.string().min(1, '请选择患者'),
+  version: z.number().int().optional().nullable(),
+  /* 一、患者基本信息 */
+  name: z.string().trim().min(1, '姓名不能为空').max(20),
+  gender: z.enum(['male', 'female'], { errorMap: () => ({ message: '性别不合法' }) }),
+  birthDate: dateStr.optional().nullable(),
+  idCard: z.string().regex(idCardRe, '身份证号格式不正确').optional().nullable().or(z.literal('')),
+  phone: z.string().regex(/^1\d{10}$/, '联系电话格式不正确').optional().nullable().or(z.literal('')),
+  visitNumber: strMax(40),
+  visitDate: dateStr.optional().nullable(),
+  visitDept: strMax(30),
+  insuranceType: z.enum(INSURANCE_TYPES).optional().nullable(),
+  /* 二、筛查与风险评估 */
+  height: numInRange('height').optional().nullable(),
+  weight: numInRange('weight').optional().nullable(),
+  waist: numInRange('waist').optional().nullable(),
+  sbp: numInRange('sbp').optional().nullable(),
+  dbp: numInRange('dbp').optional().nullable(),
+  smokingHistory: z.enum(SMOKING_HISTORY).optional().nullable(),
+  drinkingHistory: z.enum(DRINKING_HISTORY).optional().nullable(),
+  weeklyAlcoholGrams: z.number().min(0).max(5000).optional().nullable(),
+  dietHabit: z.enum(DIET_HABITS).optional().nullable(),
+  activityLevel: z.enum(ACTIVITY_LEVELS).optional().nullable(),
+  /* 三、主诉与现病史 */
+  chiefComplaint: strMax(200),
+  presentIllness: strMax(1000),
+  discoveryType: z.enum(DISCOVERY_TYPES).optional().nullable(),
+  /* 四、既往史与合并症（是/否） */
+  t2dm: z.enum(YES_NO).optional().nullable(),
+  hypertension: z.enum(YES_NO).optional().nullable(),
+  dyslipidemia: z.enum(YES_NO).optional().nullable(),
+  hyperuricemia: z.enum(YES_NO).optional().nullable(),
+  metabolicSyndrome: z.enum(YES_NO).optional().nullable(),
+  cvd: z.enum(YES_NO).optional().nullable(),
+  otherChronic: strMax(200),
+  medicationHistory: strMax(300),
+  /* 五、体格检查 */
+  skinSigns: strMax(300),
+  abdominalExam: strMax(300),
+  /* 六、辅助检查（超声/FibroScan + 14 项检验） */
+  ultrasound: z.enum(['无异常', '轻度脂肪肝', '中度脂肪肝', '重度脂肪肝']).optional().nullable(),
+  fibroScanCap: z.number().min(100, 'CAP超出合理范围(100-400)').max(400, 'CAP超出合理范围(100-400)').optional().nullable(),
+  fibroScanE: z.number().min(1, 'E值超出合理范围(1-75)').max(75, 'E值超出合理范围(1-75)').optional().nullable(),
+  /* 七、分层风险评估与干预方案 */
+  riskLevel: z.enum(['low', 'mid', 'high'], { errorMap: () => ({ message: '请选择风险分层' }) }),
+  riskReason: strMax(500),
+  interventionDiet: strMax(300),
+  interventionExercise: strMax(300),
+  weightGoal: z.number().min(0).max(100).optional().nullable(),
+  interventionMedication: strMax(300),
+  revisitPlan: strMax(300),
+  nursingProblems: strMax(500),
+  healthEducation: strMax(500)
+});
+// 14 项检验指标（LAB_FIELDS 派生，硬校验医学合理范围）
+for (const f of LAB_FIELDS) {
+  medicalRecordSchema.shape[f.key] = numInRange(f.key).optional().nullable();
+}
+
+const screeningRunSchema = z.object({ action: z.literal('run') });
+
+const screeningManualSchema = z.object({
+  action: z.literal('manual'),
+  patientId: z.string().min(1, '请选择患者'),
+  source: z.enum(['lis', 'pacs', 'manual']).default('manual'),
+  ultrasoundText: z.string().max(500).optional().nullable(),
+  note: z.string().max(200).optional().nullable()
+});
+
+const screeningSchema = z.discriminatedUnion('action', [screeningRunSchema, screeningManualSchema]);
+
+const screeningDecisionSchema = z.object({
+  decision: z.enum(['accept', 'reject']),
+  reason: z.string().trim().min(2, '请填写处理说明（纳入依据或排除理由）').max(300),
+  risk: z.enum(['low', 'mid', 'high']).optional()
+});
+
+const alertsQuerySchema = z.object({
+  level: z.enum(['high', 'mid', 'low']).optional(),
+  status: z.enum(['open', 'handled']).optional()
+});
+
+const alertHandleSchema = z.object({
+  note: z.string().trim().max(300).optional().nullable()
+});
+
+const followupExecuteSchema = z.object({
+  method: z.enum(['电话', '微信', '门诊', '住院'], { errorMap: () => ({ message: '随访方式不合法' }) }),
+  outcome: z.string().trim().min(1, '请填写随访结果').max(200),
+  conclusion: z.string().trim().max(500).optional().nullable(),
+  nextDate: dateStr.optional().nullable()
+});
+
+const followupLostSchema = z.object({
+  reason: z.string().trim().min(2, '请填写失访原因').max(200)
+});
+
+const followupRemindSchema = z.object({
+  patientIds: z.array(z.string()).min(1, '请选择患者').max(50)
+});
+
 /** 执行校验，失败抛 422（医学校验不通过） */
 function parse(schema, data) {
   const r = schema.safeParse(data || {});
@@ -176,5 +284,14 @@ module.exports = {
   assessmentSubmitSchema,
   uploadSchema,
   loginSchema,
-  smsSchema
+  smsSchema,
+  /* 医生端扩展 */
+  medicalRecordSchema,
+  screeningSchema,
+  screeningDecisionSchema,
+  alertsQuerySchema,
+  alertHandleSchema,
+  followupExecuteSchema,
+  followupLostSchema,
+  followupRemindSchema
 };

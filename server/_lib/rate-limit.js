@@ -23,7 +23,11 @@ async function rateLimit(req, user, opts) {
     const xf = req.headers['x-forwarded-for'];
     id = (typeof xf === 'string' ? xf.split(',')[0].trim() : '') || (req.socket && req.socket.remoteAddress) || 'ip';
   }
-  const key = K.lock(`rl:${opts.scope}:${id}:${minuteBucket()}`);
+  // 路由维度隔离：dispatcher 注入 req.routeName（如 patients/[id]/followup）；
+  // 冒烟直调 handler 时回退为规范化 pathname。避免同 scope 不同 max 的路由互相挤占计数器。
+  const routeName = (req && req.routeName)
+    || ((req && req.url ? req.url.split('?')[0] : '/').replace(/^\/api(\/v1)?/, '') || '/');
+  const key = K.lock(`rl:${opts.scope}:${routeName}:${id}:${minuteBucket()}`);
   const n = await db.incr(key);
   if (n === 1) await db.expire(key, windowSec + 5);
   if (n > max) {

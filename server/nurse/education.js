@@ -1,8 +1,8 @@
 'use strict';
 /**
- * 护理端 · 宣教推送：向指定患者批量推送宣教素材（PRD 3.1.1）
+ * 健康宣教推送（医护端通用，PRD 3.1.1 / 信息化平台 医护端模块）
  * GET  素材列表 + 我的推送历史
- * POST {patientIds, materialId, note?}
+ * POST {patientIds, materialId, note?} 向指定患者/患者群推送宣教素材
  */
 const { defineHandler } = require('../_lib/handler');
 const { getDb, K } = require('../_lib/storage');
@@ -14,14 +14,14 @@ const { DEFAULT_CONFIGS } = require('../_lib/seed');
 const zparse = (x) => { try { return typeof x === 'string' ? JSON.parse(x) : x; } catch { return null; } };
 
 module.exports = defineHandler({
-  auth: 'nurse',
+  auth: 'staff',
   limit: { scope: 'push', max: 30, windowSec: 60, byUser: true },
   fn: async ({ req, body, user }) => {
     const db = await getDb();
 
     if (req.method === 'GET') {
       const materials = await getConfig('materials', DEFAULT_CONFIGS.materials);
-      const logIds = await db.zrevrange(K.eduLog('idx_nurse_' + user.uid), 0, -1);
+      const logIds = await db.zrevrange(K.eduLog('idx_staff_' + user.uid), 0, -1);
       const history = (await Promise.all(logIds.map(async id => zparse(await db.get(K.eduLog(id)))))).filter(Boolean);
       return { materials, history: history.slice(0, 50) };
     }
@@ -41,7 +41,7 @@ module.exports = defineHandler({
         await pushMsg(p.userId, {
           type: 'education',
           title: `健康宣教：${material.title}`,
-          content: material.html + (input.note ? `<p class="note">护士留言：${input.note}</p>` : ''),
+          content: material.html + (input.note ? `<p class="note">医护留言：${input.note}</p>` : ''),
           from: user.name,
           payload: { materialId: material.id }
         });
@@ -49,14 +49,14 @@ module.exports = defineHandler({
       } else {
         skipped.push(pid);
       }
-      const log = { id: logId, ts: Date.now(), patientId: pid, patientName: p.name, materialId: material.id, materialTitle: material.title, nurseName: user.name, pushed: !!p.userId };
+      const log = { id: logId, ts: Date.now(), patientId: pid, patientName: p.name, materialId: material.id, materialTitle: material.title, staffName: user.name, staffRole: user.role, pushed: !!p.userId };
       await db.lpush(K.eduLog(pid), JSON.stringify(log));
       await db.ltrim(K.eduLog(pid), 0, 199);
       await db.set(K.eduLog(logId), JSON.stringify(log));
-      await db.zadd(K.eduLog('idx_nurse_' + user.uid), log.ts, logId);
+      await db.zadd(K.eduLog('idx_staff_' + user.uid), log.ts, logId);
     }
 
-    await track('education_push', { nurse_id: user.uid, count: sent });
+    await track('education_push', { staff_id: user.uid, role: user.role, count: sent });
     await audit('education.push', { operator: user.uid, sent, skipped: skipped.length });
     return { sent, skipped };
   }

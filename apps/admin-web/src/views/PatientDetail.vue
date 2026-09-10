@@ -67,6 +67,39 @@
           </el-timeline>
         </el-tab-pane>
 
+        <el-tab-pane v-if="auth.isDoctor" label="专病档案" name="medrec" lazy>
+          <el-empty v-if="!medrec" description="尚未完成脂肪肝专病建档">
+            <el-button type="primary" @click="$router.push(`/medical-records?patientId=${p.id}`)">去建档</el-button>
+          </el-empty>
+          <template v-else>
+            <el-alert :type="medrec.riskLevel === 'high' ? 'error' : medrec.riskLevel === 'mid' ? 'warning' : 'success'" :closable="false" class="mb-12">
+              <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+                <b>风险分层：{{ riskLabel(medrec.riskLevel) }}</b>
+                <span>模型评分 {{ medrec.riskScore }} 分</span>
+                <span style="color:#86909c;font-size:12px">分层医生 {{ medrec.riskStratifiedBy }} · {{ fmtTime(medrec.riskStratifiedAt) }}</span>
+              </div>
+              <div v-if="(medrec.riskModelReasons || []).length" style="color:#86909c;font-size:12px;margin-top:4px">
+                评分依据：{{ medrec.riskModelReasons.join('；') }}
+              </div>
+              <div v-if="medrec.riskReason" style="color:#86909c;font-size:12px;margin-top:2px">医生依据：{{ medrec.riskReason }}</div>
+            </el-alert>
+
+            <el-descriptions v-for="sec in filledSections" :key="sec.key" :title="sec.title" :column="3" border size="small" style="margin-bottom:14px">
+              <el-descriptions-item v-for="fv in sec.items" :key="fv.label" :label="fv.label">{{ fv.value }}</el-descriptions-item>
+            </el-descriptions>
+
+            <h4>📋 随访执行记录</h4>
+            <el-empty v-if="!medrecFollowups.length" description="暂无随访执行记录" :image-size="60" />
+            <el-timeline v-else style="padding-left:6px">
+              <el-timeline-item v-for="(r, i) in medrecFollowups" :key="i" :timestamp="`${fmtTime(r.ts)} · 计划 ${r.dueDate || '-'}`" type="primary">
+                <b>{{ r.method }}</b>（执行人：{{ r.by }}）
+                <p style="margin:4px 0 0;color:#4e5969">{{ r.outcome }}</p>
+                <p v-if="r.conclusion" style="margin:2px 0 0;color:#86909c;font-size:12px">结论：{{ r.conclusion }}{{ r.nextDate ? ` · 下次随访 ${r.nextDate}` : '' }}</p>
+              </el-timeline-item>
+            </el-timeline>
+          </template>
+        </el-tab-pane>
+
         <el-tab-pane label="自填数据" name="records">
           <div class="mb-12" style="display:flex;gap:8px">
             <el-radio-group v-model="recType" size="small" @change="reloadRecords">
@@ -179,7 +212,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api';
@@ -187,7 +220,7 @@ import { useAuthStore } from '../stores/auth';
 import { fmtTime, fmtDate, todayStr } from '../utils/format';
 import RiskTag from '../components/RiskTag.vue';
 import TrendChart from '../components/TrendChart.vue';
-import { MEAL_LABELS, INTENSITY_LABELS, LAB_FIELDS } from '@flwb/shared';
+import { MEAL_LABELS, INTENSITY_LABELS, LAB_FIELDS, LAB_FIELDS_BY_KEY, MEDICAL_RECORD_SECTIONS, RISK_LABELS } from '@flwb/shared';
 
 const route = useRoute();
 const auth = useAuthStore();

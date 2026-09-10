@@ -12,13 +12,30 @@
         <el-menu-item index="/patients">
           <el-icon><User /></el-icon><span>患者管理</span>
         </el-menu-item>
-        <el-menu-item v-if="auth.isDoctor" index="/mdt">
-          <el-icon><Connection /></el-icon><span>MDT会诊</span>
+        <template v-if="auth.isDoctor">
+          <el-menu-item index="/medical-records">
+            <el-icon><Notebook /></el-icon><span>专病建档</span>
+          </el-menu-item>
+          <el-menu-item index="/screening">
+            <el-icon><Search /></el-icon><span>筛查识别</span>
+          </el-menu-item>
+          <el-menu-item index="/followup">
+            <el-icon><Calendar /></el-icon><span>随访管理</span>
+          </el-menu-item>
+          <el-menu-item index="/alerts">
+            <el-icon><Bell /></el-icon><span>预警提醒</span>
+          </el-menu-item>
+          <el-menu-item index="/mdt">
+            <el-icon><Connection /></el-icon><span>MDT会诊</span>
+          </el-menu-item>
+          <el-menu-item index="/quality">
+            <el-icon><DataAnalysis /></el-icon><span>质量看板</span>
+          </el-menu-item>
+        </template>
+        <el-menu-item v-if="auth.isDoctor || auth.isNurse" index="/education">
+          <el-icon><Reading /></el-icon><span>宣教推送</span>
         </el-menu-item>
         <template v-if="auth.isNurse">
-          <el-menu-item index="/education">
-            <el-icon><Reading /></el-icon><span>宣教推送</span>
-          </el-menu-item>
           <el-menu-item index="/guidance">
             <el-icon><ChatDotRound /></el-icon><span>个案指导</span>
           </el-menu-item>

@@ -115,6 +115,245 @@
     return Math.round((weightKg / (h * h)) * 10) / 10;
   }
 
+  /* ==================== 脂肪肝专病建档（结构化电子病历 · 单一数据源） ==================== */
+  /** 选项枚举（信息化平台文档「脂肪肝患者结构化电子病历」） */
+  const INSURANCE_TYPES = ['职工医保', '居民医保', '自费', '其他'];
+  const SMOKING_HISTORY = ['从不', '已戒烟', '吸烟中'];
+  const DRINKING_HISTORY = ['从不', '偶尔', '经常', '每日'];
+  const DIET_HABITS = ['高脂', '高糖', '高碳水', '均衡', '其他'];
+  const ACTIVITY_LEVELS = ['久坐', '轻度', '中度', '重度'];
+  const YES_NO = ['是', '否'];
+  const DISCOVERY_TYPES = ['有症状就诊', '无症状/体检发现'];
+  const GENDER_OPTIONS = [
+    { value: 'male', label: '男' },
+    { value: 'female', label: '女' }
+  ];
+
+  /**
+   * 专病建档表单定义：section → fields。
+   * type: text|number|date|select|textarea|yesno|bp（收缩压/舒张压成对）
+   * required: 服务端硬校验；-medical 专用，不影响患者端
+   */
+  const MEDICAL_RECORD_SECTIONS = [
+    { key: 'basic', title: '一、患者基本信息', fields: [
+      { key: 'name', label: '姓名', type: 'text', required: true, maxLen: 20 },
+      { key: 'gender', label: '性别', type: 'select', options: GENDER_OPTIONS.map(g => g.value), optionLabels: GENDER_OPTIONS.map(g => g.label), required: true },
+      { key: 'birthDate', label: '出生日期', type: 'date' },
+      { key: 'idCard', label: '身份证号', type: 'text', maxLen: 18 },
+      { key: 'phone', label: '联系电话', type: 'text', maxLen: 11 },
+      { key: 'visitNumber', label: '门诊号/住院号', type: 'text', maxLen: 40 },
+      { key: 'visitDate', label: '就诊日期', type: 'date' },
+      { key: 'visitDept', label: '就诊科室', type: 'text', maxLen: 30 },
+      { key: 'insuranceType', label: '医保类型', type: 'select', options: INSURANCE_TYPES }
+    ] },
+    { key: 'screening', title: '二、筛查与风险评估', fields: [
+      { key: 'height', label: '身高(cm)', type: 'number', range: 'height' },
+      { key: 'weight', label: '体重(kg)', type: 'number', range: 'weight' },
+      { key: 'bmi', label: 'BMI(kg/m²)', type: 'number', auto: true },
+      { key: 'waist', label: '腰围(cm)', type: 'number', range: 'waist' },
+      { key: 'sbp', label: '收缩压(mmHg)', type: 'number', range: 'sbp' },
+      { key: 'dbp', label: '舒张压(mmHg)', type: 'number', range: 'dbp' },
+      { key: 'smokingHistory', label: '吸烟史', type: 'select', options: SMOKING_HISTORY },
+      { key: 'drinkingHistory', label: '饮酒史', type: 'select', options: DRINKING_HISTORY },
+      { key: 'weeklyAlcoholGrams', label: '饮酒量(g/周)', type: 'number', min: 0, max: 5000 },
+      { key: 'dietHabit', label: '饮食习惯', type: 'select', options: DIET_HABITS },
+      { key: 'activityLevel', label: '体力活动情况', type: 'select', options: ACTIVITY_LEVELS }
+    ] },
+    { key: 'history', title: '三、主诉与现病史', fields: [
+      { key: 'chiefComplaint', label: '主诉', type: 'textarea', maxLen: 200 },
+      { key: 'presentIllness', label: '现病史（起病时间、诱因、主要症状、诊疗经过）', type: 'textarea', maxLen: 1000 },
+      { key: 'discoveryType', label: '发现途径', type: 'select', options: DISCOVERY_TYPES }
+    ] },
+    { key: 'past', title: '四、既往史与合并症', fields: [
+      { key: 't2dm', label: '2型糖尿病', type: 'yesno' },
+      { key: 'hypertension', label: '高血压', type: 'yesno' },
+      { key: 'dyslipidemia', label: '血脂异常', type: 'yesno' },
+      { key: 'hyperuricemia', label: '高尿酸血症', type: 'yesno' },
+      { key: 'metabolicSyndrome', label: '代谢综合征', type: 'yesno' },
+      { key: 'cvd', label: '心血管疾病', type: 'yesno' },
+      { key: 'otherChronic', label: '其他慢性病', type: 'text', maxLen: 200 },
+      { key: 'medicationHistory', label: '用药史（降糖/降压/降脂等）', type: 'textarea', maxLen: 300 }
+    ] },
+    { key: 'physical', title: '五、体格检查', fields: [
+      { key: 'skinSigns', label: '皮肤表现（蜘蛛痣、肝掌等）', type: 'textarea', maxLen: 300 },
+      { key: 'abdominalExam', label: '腹部查体（肝脾触诊等）', type: 'textarea', maxLen: 300 }
+    ] },
+    { key: 'auxiliary', title: '六、辅助检查', fields: [
+      { key: 'ultrasound', label: '肝脏超声', type: 'select', options: ['无异常', '轻度脂肪肝', '中度脂肪肝', '重度脂肪肝'] },
+      { key: 'fibroScanCap', label: 'FibroScan CAP(dB/m)', type: 'number', min: 100, max: 400 },
+      { key: 'fibroScanE', label: 'FibroScan 肝脏硬度值 E(kPa)', type: 'number', min: 1, max: 75 },
+      ...LAB_FIELDS.map(f => ({ key: f.key, label: `${f.label}(${f.unit})`, type: 'number', range: f.key, group: f.group }))
+    ] },
+    { key: 'assessment', title: '七、分层风险评估与干预方案', fields: [
+      { key: 'riskLevel', label: '风险分层（低/中/高风险）', type: 'select', options: ['low', 'mid', 'high'], optionLabels: ['低风险', '中风险', '高风险'], required: true },
+      { key: 'riskReason', label: '分层依据/理由', type: 'textarea', maxLen: 500 },
+      { key: 'interventionDiet', label: '干预方案-饮食', type: 'textarea', maxLen: 300 },
+      { key: 'interventionExercise', label: '干预方案-运动', type: 'textarea', maxLen: 300 },
+      { key: 'weightGoal', label: '减重目标(kg)', type: 'number', min: 0, max: 100 },
+      { key: 'interventionMedication', label: '干预方案-药物', type: 'textarea', maxLen: 300 },
+      { key: 'revisitPlan', label: '复查计划', type: 'textarea', maxLen: 300 },
+      { key: 'nursingProblems', label: '护理评估-专科护理问题', type: 'textarea', maxLen: 500 },
+      { key: 'healthEducation', label: '护理评估-健康宣教记录', type: 'textarea', maxLen: 500 }
+    ] }
+  ];
+
+  /** 建档字段 key 白名单（服务端存储过滤） */
+  const MEDICAL_RECORD_KEYS = MEDICAL_RECORD_SECTIONS.flatMap(s => s.fields.map(f => f.key));
+
+  /* ==================== 筛查识别规则（信息化平台 · 模块1） ==================== */
+  /** LIS 检验指标阈值规则（超出即触发筛查） */
+  const SCREENING_LAB_RULES = [
+    { key: 'alt', label: 'ALT', op: '>', threshold: 40 },
+    { key: 'ast', label: 'AST', op: '>', threshold: 40 },
+    { key: 'ggt', label: 'GGT', op: '>', threshold: 50 },
+    { key: 'tg', label: '甘油三酯', op: '>=', threshold: 1.7 }
+  ];
+  /** BMI 阈值规则 */
+  const SCREENING_BMI_RULES = [
+    { key: 'bmi', label: 'BMI超重', op: '>=', threshold: 24 },
+    { key: 'bmi', label: 'BMI肥胖', op: '>=', threshold: 28 }
+  ];
+  /** PACS 超声报告关键词规则 */
+  const SCREENING_ULTRASOUND_KEYWORDS = ['脂肪肝', '肝脏脂肪变性', 'MASLD'];
+
+  /**
+   * 规则引擎：评估单份「检验/超声/基础数据」命中情况
+   * @returns {{ hits: Array<{rule:string,detail:string,source:'lis'|'pacs'|'bmi'}>, positive: boolean }}
+   */
+  function evaluateScreening(input) {
+    const hits = [];
+    for (const r of SCREENING_LAB_RULES) {
+      const v = input[r.key];
+      if (v != null && Number(v) >= r.threshold) {
+        hits.push({ rule: `${r.label}${r.op}${r.threshold}`, detail: `${r.label}=${v}${r.op}${r.threshold}`, source: 'lis' });
+      }
+    }
+    const bmi = input.bmi ?? calcBmi(input.weight, input.height);
+    if (bmi != null && Number(bmi) >= 28) {
+      hits.push({ rule: 'BMI>=28（肥胖）', detail: `BMI=${bmi} 达肥胖标准`, source: 'bmi' });
+    } else if (bmi != null && Number(bmi) >= 24) {
+      hits.push({ rule: 'BMI>=24（超重）', detail: `BMI=${bmi} 达超重标准`, source: 'bmi' });
+    }
+    const text = String(input.ultrasoundText || input.ultrasound || '');
+    for (const kw of SCREENING_ULTRASOUND_KEYWORDS) {
+      if (text.includes(kw)) {
+        hits.push({ rule: `超声关键词「${kw}」`, detail: `超声报告命中关键词「${kw}」`, source: 'pacs' });
+        break;
+      }
+    }
+    return { hits, positive: hits.length > 0 };
+  }
+
+  /* ==================== 风险分层（信息化平台 · 模块2） ==================== */
+  /**
+   * 综合风险分层：按代谢/肝酶/影像/合并症加权评分
+   * @param {object} rec 建档记录（含 bmi、labs、合并症、超声等）
+   * @returns {{ risk: 'low'|'mid'|'high', score: number, reasons: string[] }}
+   */
+  function riskStratify(rec = {}) {
+    let score = 0;
+    const reasons = [];
+    const num = (v) => (v == null || v === '' ? null : Number(v));
+
+    const bmi = num(rec.bmi ?? calcBmi(rec.weight, rec.height));
+    if (bmi != null) {
+      if (bmi >= 28) { score += 2; reasons.push(`BMI ${bmi}（肥胖）+2`); }
+      else if (bmi >= 24) { score += 1; reasons.push(`BMI ${bmi}（超重）+1`); }
+    }
+    const waist = num(rec.waist);
+    if (waist != null && ((rec.gender === 'male' && waist >= 90) || (rec.gender === 'female' && waist >= 85))) {
+      score += 1; reasons.push(`腰围 ${waist}cm（中心性肥胖）+1`);
+    }
+    const enzyme = [];
+    for (const k of ['alt', 'ast', 'ggt']) {
+      const v = num(rec[k]);
+      const f = LAB_FIELDS_BY_KEY[k];
+      if (v != null && f && v > f.ref[1]) enzyme.push(`${f.label} ${v}↑`);
+    }
+    if (enzyme.length >= 2) { score += 2; reasons.push(`肝酶多项异常（${enzyme.join('、')}）+2`); }
+    else if (enzyme.length === 1) { score += 1; reasons.push(`肝酶异常（${enzyme[0]}）+1`); }
+
+    const fpg = num(rec.fpg); const hba1c = num(rec.hba1c);
+    if ((fpg != null && fpg >= 6.1) || (hba1c != null && hba1c >= 6.0)) {
+      score += 1; reasons.push(`血糖代谢异常（${fpg != null && fpg >= 6.1 ? `FPG ${fpg}` : `HbA1c ${hba1c}%`}）+1`);
+    }
+    const tg = num(rec.tg);
+    if (tg != null && tg >= 1.7) { score += 1; reasons.push(`甘油三酯 ${tg}≥1.7 +1`); }
+
+    const comorbid = [];
+    for (const [k, label] of [['t2dm', '2型糖尿病'], ['hypertension', '高血压'], ['dyslipidemia', '血脂异常'], ['metabolicSyndrome', '代谢综合征']]) {
+      if (rec[k] === '是') comorbid.push(label);
+    }
+    if (comorbid.length >= 2) { score += 2; reasons.push(`合并症≥2（${comorbid.join('、')}）+2`); }
+    else if (comorbid.length === 1) { score += 1; reasons.push(`合并 ${comorbid[0]} +1`); }
+
+    const us = rec.ultrasound || '';
+    if (us.includes('重度')) { score += 3; reasons.push('超声示重度脂肪肝 +3'); }
+    else if (us.includes('中度')) { score += 2; reasons.push('超声示中度脂肪肝 +2'); }
+    else if (us.includes('轻度')) { score += 1; reasons.push('超声示轻度脂肪肝 +1'); }
+    const fibroE = num(rec.fibroScanE);
+    if (fibroE != null && fibroE >= 8) { score += 2; reasons.push(`FibroScan E ${fibroE}kPa≥8 +2`); }
+
+    const risk = score >= 5 ? 'high' : score >= 3 ? 'mid' : 'low';
+    return { risk, score, reasons };
+  }
+
+  /* ==================== 随访周期（信息化平台 · 模块4） ==================== */
+  /** 按风险等级随访周期（月）：低 6-12 / 中 3-6 / 高 1-3 */
+  const FOLLOWUP_CYCLES = { low: [6, 12], mid: [3, 6], high: [1, 3] };
+
+  /** 按风险建议下次随访日期（取周期下限） */
+  function suggestFollowupDate(risk, fromDateStr) {
+    const base = fromDateStr || todayOfStr();
+    const [minM] = FOLLOWUP_CYCLES[risk] || FOLLOWUP_CYCLES.mid;
+    const d = new Date(base + 'T00:00:00+08:00');
+    d.setMonth(d.getMonth() + minM);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+
+  function todayOfStr() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  }
+
+  /** 随访计划状态判定 */
+  const FOLLOWUP_STATUS = {
+    LOST: 'lost', OVERDUE: 'overdue', TODAY: 'today', SOON_3D: 'soon3d', SCHEDULED: 'scheduled'
+  };
+  const FOLLOWUP_STATUS_LABELS = { lost: '已失访', overdue: '已逾期', today: '今日随访', soon3d: '3日内', scheduled: '已预约' };
+
+  /**
+   * 计算随访状态（按上海时区日期字符串比较）
+   * @returns {{ status: string, daysLeft: number }} daysLeft = 距随访日天数（负数为已逾期）
+   */
+  function followupStatusOf(nextDate, todayStr, lostAt) {
+    if (lostAt) return { status: FOLLOWUP_STATUS.LOST, daysLeft: null };
+    if (!nextDate) return { status: null, daysLeft: null };
+    const daysLeft = Math.round((new Date(nextDate + 'T00:00:00+08:00') - new Date(todayStr + 'T00:00:00+08:00')) / 86400000);
+    if (daysLeft < 0) return { status: FOLLOWUP_STATUS.OVERDUE, daysLeft };
+    if (daysLeft === 0) return { status: FOLLOWUP_STATUS.TODAY, daysLeft };
+    if (daysLeft <= 3) return { status: FOLLOWUP_STATUS.SOON_3D, daysLeft };
+    return { status: FOLLOWUP_STATUS.SCHEDULED, daysLeft };
+  }
+
+  /* ==================== 预警分级 ==================== */
+  const ALERT_LEVELS = [
+    { value: 'high', label: '高危', color: '#f56c6c' },
+    { value: 'mid', label: '中危', color: '#e6a23c' },
+    { value: 'low', label: '低危', color: '#e6a23c' }
+  ];
+  const ALERT_TYPES = {
+    LAB_ABNORMAL: 'lab_abnormal',
+    SCREENING_POSITIVE: 'screening_positive',
+    HIGH_RISK_NO_MDT: 'high_risk_no_mdt',
+    FOLLOWUP_OVERDUE: 'followup_overdue',
+    VITALS_ABNORMAL: 'vitals_abnormal'
+  };
+  const ALERT_TYPE_LABELS = {
+    lab_abnormal: '检验异常', screening_positive: '筛查阳性', high_risk_no_mdt: '高风险未会诊',
+    followup_overdue: '随访逾期', vitals_abnormal: '指标异常'
+  };
+
   /** 硬校验单个指标 @returns {{ ok: boolean, msg?: string }} */
   function checkMedicalRange(key, value) {
     const r = MED_RANGES[key];
@@ -158,6 +397,34 @@
     CLIENT_SALT,
     calcBmi,
     checkMedicalRange,
-    checkAdvisory
+    checkAdvisory,
+    /* 专病建档 */
+    INSURANCE_TYPES,
+    SMOKING_HISTORY,
+    DRINKING_HISTORY,
+    DIET_HABITS,
+    ACTIVITY_LEVELS,
+    YES_NO,
+    DISCOVERY_TYPES,
+    GENDER_OPTIONS,
+    MEDICAL_RECORD_SECTIONS,
+    MEDICAL_RECORD_KEYS,
+    /* 筛查识别 */
+    SCREENING_LAB_RULES,
+    SCREENING_BMI_RULES,
+    SCREENING_ULTRASOUND_KEYWORDS,
+    evaluateScreening,
+    /* 风险分层 */
+    riskStratify,
+    /* 随访管理 */
+    FOLLOWUP_CYCLES,
+    suggestFollowupDate,
+    FOLLOWUP_STATUS,
+    FOLLOWUP_STATUS_LABELS,
+    followupStatusOf,
+    /* 预警 */
+    ALERT_LEVELS,
+    ALERT_TYPES,
+    ALERT_TYPE_LABELS
   };
 });

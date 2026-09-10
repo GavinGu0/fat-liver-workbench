@@ -42,7 +42,16 @@ const K = {
   config: (key) => `config:${key}`,
   backup: (date) => `backup:${date}`,
   img: (id) => `img:${id}`,
-  flag: (k) => `flag:${k}`
+  flag: (k) => `flag:${k}`,
+  medrec: (pid) => `medrec:${pid}`,
+  screening: (id) => `screen:${id}`,
+  screeningIdx: (docId) => `screen:index:doc:${docId}`,
+  screeningAll: 'screen:index:all',
+  screeningPid: (pid) => `screen:index:pid:${pid}`,
+  alert: (id) => `alert:${id}`,
+  alertIdx: (uid) => `alert:index:uid:${uid}`,
+  alertUnread: (uid) => `alert:unread:uid:${uid}`,
+  followupRec: (pid) => `followup:rec:${pid}`
 };
 
 /** 以上海时区计算 yyyy-MM-dd（服务运行于 UTC，业务日期必须按本地时区取） */
