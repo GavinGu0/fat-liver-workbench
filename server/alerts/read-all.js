@@ -1,3 +1,2 @@
-const f = async ({ user }) => {
-  return user;
-};
+'use strict';
+/** 一键全部已读（预警批量处理） */
