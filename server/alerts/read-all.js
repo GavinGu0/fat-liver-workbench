@@ -1,1 +1,3 @@
-placeholder2
+const f = async ({ user }) => {
+  return user;
+};
