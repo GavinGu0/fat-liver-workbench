@@ -74,7 +74,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import { api } from '../api';
@@ -91,11 +91,23 @@ async function loadUnread() {
   } catch { /* 静默：未读数刷新失败不打扰使用 */ }
 }
 
+function startPolling() {
+  if (timer) return;
+  timer = setInterval(loadUnread, 30000);
+}
+function stopPolling() {
+  clearInterval(timer);
+  timer = null;
+}
+
 onMounted(() => {
   loadUnread();
-  timer = setInterval(loadUnread, 30000);
+  startPolling();
 });
-onBeforeUnmount(() => clearInterval(timer));
+// keep-alive 场景：失活时停止轮询，激活时恢复（onMounted 不会重复触发，需幂等）
+onDeactivated(stopPolling);
+onActivated(startPolling);
+onBeforeUnmount(stopPolling);
 // 路由切换后刷新（离开消息中心时角标同步）
 watch(() => route.path, loadUnread);
 
