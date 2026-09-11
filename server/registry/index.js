@@ -54,6 +54,7 @@ async function listArchives({ query, user }) {
       missingItems: rec ? comp.missing.map(m => m.label) : [],
       version: rec ? rec.version : null,
       createdByName: rec ? rec.createdByName : '',
+      archivedAt: rec ? rec.createdAt : null,
       updatedAt: rec ? rec.updatedAt : (p.archivedAt || null),
       createdAt: p.createdAt,
       nextFollowupDate: p.nextFollowupDate || null,
