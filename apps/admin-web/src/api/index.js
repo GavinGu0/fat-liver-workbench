@@ -7,6 +7,11 @@ export const api = {
   logout: (refreshToken) => http.post('/auth/logout', { refreshToken }),
   config: () => http.get('/config'),
 
+  /* 消息中心（医护端） */
+  messages: () => http.get('/messages'),
+  readMessage: (mid) => http.post(`/messages/${mid}/read`),
+  readAllMessages: () => http.post('/messages/read-all'),
+
   /* 医生 · 工作台 */
   dashboard: () => http.get('/dashboard'),
 

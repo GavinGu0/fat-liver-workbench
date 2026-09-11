@@ -48,18 +48,25 @@
     <el-container>
       <el-header class="header">
         <div class="header-title">{{ $route.meta.title || '工作台' }}</div>
-        <el-dropdown @command="onCmd">
-          <span class="user-info">
-            <el-avatar :size="28" style="background:#1668dc">{{ (auth.user && auth.user.name || '?').slice(0,1) }}</el-avatar>
-            <span class="uname">{{ auth.user && auth.user.name }}</span>
-            <el-tag size="small" type="info">{{ auth.isDoctor ? '医生' : '护士' }}</el-tag>
-          </span>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+        <div class="header-right">
+          <el-badge :value="unread" :hidden="!unread" :max="99" class="msg-badge">
+            <el-button text aria-label="消息中心" @click="$router.push('/messages')">
+              <el-icon :size="18"><ChatDotRound /></el-icon>
+            </el-button>
+          </el-badge>
+          <el-dropdown @command="onCmd">
+            <span class="user-info">
+              <el-avatar :size="28" style="background:#1668dc">{{ (auth.user && auth.user.name || '?').slice(0,1) }}</el-avatar>
+              <span class="uname">{{ auth.user && auth.user.name }}</span>
+              <el-tag size="small" type="info">{{ auth.isDoctor ? '医生' : '护士' }}</el-tag>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
       </el-header>
       <el-main class="main"><router-view /></el-main>
     </el-container>
@@ -67,9 +74,31 @@
 </template>
 
 <script setup>
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { api } from '../api';
 
 const auth = useAuthStore();
+const route = useRoute();
+const unread = ref(0);
+let timer = null;
+
+async function loadUnread() {
+  try {
+    const d = await api.messages();
+    unread.value = d.unread || 0;
+  } catch { /* 静默：未读数刷新失败不打扰使用 */ }
+}
+
+onMounted(() => {
+  loadUnread();
+  timer = setInterval(loadUnread, 30000);
+});
+onBeforeUnmount(() => clearInterval(timer));
+// 路由切换后刷新（离开消息中心时角标同步）
+watch(() => route.path, loadUnread);
+
 function onCmd(cmd) {
   if (cmd === 'logout') auth.logout();
 }
@@ -87,6 +116,8 @@ function onCmd(cmd) {
   border-bottom: 1px solid #e5e6eb; height: 56px;
 }
 .header-title { font-size: 16px; font-weight: 600; }
+.header-right { display: flex; align-items: center; gap: 16px; }
+.msg-badge :deep(.el-button) { padding: 6px; color: #4e5969; }
 .user-info { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .uname { font-size: 14px; }
 .main { padding: 16px; overflow: auto; }

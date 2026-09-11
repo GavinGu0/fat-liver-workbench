@@ -80,8 +80,10 @@
                 <el-form-item prop="initialPassword" label="初始密码">
                   <el-input v-model="form.initialPassword" :type="showPwd ? 'text' : 'password'" maxlength="64" placeholder="至少8位">
                     <template #append>
-                      <el-button @click="genPassword">随机生成</el-button>
-                      <el-button @click="showPwd = !showPwd">{{ showPwd ? '隐藏' : '显示' }}</el-button>
+                      <span class="pwd-actions">
+                        <el-button @click="genPassword">随机生成</el-button>
+                        <el-button @click="showPwd = !showPwd">{{ showPwd ? '隐藏' : '显示' }}</el-button>
+                      </span>
                     </template>
                   </el-input>
                 </el-form-item>
@@ -566,6 +568,11 @@ onBeforeUnmount(() => {
 .lab-group-title { font-size: 13px; font-weight: 600; color: #1d2129; margin: 14px 0 8px; }
 .form-field :deep(.el-input-number.is-abnormal .el-input__wrapper) { box-shadow: 0 0 0 1px #f56c6c inset; }
 .form-field :deep(.el-input-number.is-abnormal .el-input__inner) { color: #f56c6c; }
+
+/* 密码框 append 双按钮：覆盖 EP 默认 flex:1 / margin:0 -20px，避免两按钮相互重叠 */
+.pwd-actions { display: inline-flex; align-items: center; }
+.pwd-actions :deep(.el-button) { flex: none; margin: 0; }
+.pwd-actions :deep(.el-button + .el-button) { margin-left: 8px; }
 
 .save-bar {
   position: sticky; bottom: 0; display: flex; justify-content: flex-end; align-items: center; gap: 10px;

@@ -2,8 +2,9 @@
 /** 患者填报：饮食记录（多食物+拍照），幂等键防重复提交，30次/分钟限流 */
 const { defineHandler } = require('../_lib/handler');
 const { getDb, K } = require('../_lib/storage');
-const { updatePatient, track, audit } = require('../_lib/services');
+const { updatePatient, track, audit, pushMsg } = require('../_lib/services');
 const { parse, dietSchema } = require('../_lib/validate');
+const { MEAL_LABELS } = require('@flwb/shared');
 const { requireRole } = require('../_lib/auth');
 
 module.exports = defineHandler({
@@ -27,10 +28,19 @@ module.exports = defineHandler({
 
     await db.lpush(K.diet(user.patientId), JSON.stringify(record));
     await db.ltrim(K.diet(user.patientId), 0, 499);
-    await updatePatient(user.patientId, (p) => { p.lastActivityAt = Date.now(); }, null);
+    const p = await updatePatient(user.patientId, (doc) => { doc.lastActivityAt = Date.now(); }, null);
 
     await track('data_submit', { data_type: 'diet', user_id: user.uid });
     await audit('record.diet', { uid: user.uid, patient_id: user.patientId });
+
+    /* 推送主管医生：患者完成饮食记录 */
+    await pushMsg(p && p.docId, {
+      type: 'patient_submit',
+      title: `🍽️ ${p.name || '患者'} 记录了${MEAL_LABELS[input.meal] || ''}饮食`,
+      content: `<p>${input.foods.map((f) => f.name).join('、')}${input.note ? `；备注：${input.note}` : ''}</p>`,
+      from: p.name || '患者',
+      link: `/patients/${user.patientId}`
+    });
 
     return { id: record.id, ts: record.ts };
   }

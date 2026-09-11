@@ -150,6 +150,18 @@ const diet2 = await call('server/records/diet.js', { ...patAuth, method: 'POST',
 const diet3 = await call('server/records/diet.js', { ...patAuth, method: 'POST', headers: { 'x-idempotency-key': dupKey }, body: { meal: 'dinner', recordDate: '2026-09-08', foods: [{ name: '杂粮粥', grams: 300 }] } });
 check('idempotency dedup', diet2.code === 0 && diet3.code === 40901, [diet2.code, diet3.code]);
 
+console.log('\n[11.5] 患者填报 → 医生端推送');
+// goodVitals(含异常值) + diet + ex + diet2 共 4 条成功填报（badVitals/badBp 被拒、diet3 幂等去重，均不推送）
+const docMsgs = await call('server/messages/index.js', { ...docAuth, url: '/api/messages' });
+const submits = (docMsgs.data?.items || []).filter((m) => m.type === 'patient_submit');
+check('doctor receives patient_submit pushes', docMsgs.code === 0 && submits.length >= 4, submits.length);
+check('push carries from/link and abnormal flag', submits.length >= 4 && submits.every((m) => m.from === '王小明' && m.link === '/patients/p_1009')
+  && submits.some((m) => m.title.includes('含异常值')), submits.map((m) => m.title));
+const docMsgReadAll = await call('server/messages/read-all.js', { ...docAuth, method: 'POST', body: {} });
+check('doctor read-all msgs ok', docMsgReadAll.code === 0, docMsgReadAll);
+const docMsgs2 = await call('server/messages/index.js', { ...docAuth, url: '/api/messages' });
+check('unread cleared after read-all', docMsgs2.code === 0 && docMsgs2.data.unread === 0, docMsgs2.data?.unread);
+
 console.log('\n[12] 护士：宣教/指导/评估');
 const nurseLogin = await call('server/auth/login.js', { method: 'POST', body: { mode: 'password', username: 'HULI01', passwordHash: sha('123456') } });
 check('nurse login', nurseLogin.code === 0 && nurseLogin.data.user.role === 'nurse', nurseLogin.data?.user);

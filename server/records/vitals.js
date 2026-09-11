@@ -6,7 +6,7 @@
  */
 const { defineHandler } = require('../_lib/handler');
 const { getDb, K } = require('../_lib/storage');
-const { updatePatient, track, audit } = require('../_lib/services');
+const { updatePatient, track, audit, pushMsg } = require('../_lib/services');
 const { parse, vitalsSchema } = require('../_lib/validate');
 const { calcBmi, checkAdvisory } = require('@flwb/shared');
 const { ApiError } = require('../_lib/response');
@@ -53,6 +53,24 @@ module.exports = defineHandler({
     await audit('record.vitals', { uid: user.uid, patient_id: user.patientId });
 
     const warnings = checkAdvisory({ ...record });
+
+    /* 推送主管医生：患者完成随访指标填报（站内信，点击跳转患者详情） */
+    const parts = [];
+    if (record.weight != null) parts.push(`体重 ${record.weight}kg`);
+    if (record.bmi != null) parts.push(`BMI ${record.bmi}`);
+    if (record.waist != null) parts.push(`腰围 ${record.waist}cm`);
+    if (record.sbp != null && record.dbp != null) parts.push(`血压 ${record.sbp}/${record.dbp}`);
+    else if (record.sbp != null) parts.push(`收缩压 ${record.sbp}`);
+    else if (record.dbp != null) parts.push(`舒张压 ${record.dbp}`);
+    if (record.glucose != null) parts.push(`血糖 ${record.glucose}`);
+    await pushMsg(p.docId, {
+      type: 'patient_submit',
+      title: `📊 ${p.name || '患者'} 提交了随访指标${warnings.length ? '（含异常值）' : ''}`,
+      content: `<p>${parts.join(' · ') || '无有效指标'}</p>${warnings.length ? '<p style="color:#f56c6c">⚠️ 部分指标超出建议范围，请及时关注并给出指导。</p>' : ''}`,
+      from: p.name || '患者',
+      link: `/patients/${user.patientId}`
+    });
+
     return { id: record.id, ts: record.ts, bmi: record.bmi, warnings };
   }
 });
