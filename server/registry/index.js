@@ -12,7 +12,7 @@ const { getDb, K, dateStr } = require('../_lib/storage');
 const { requireRole, hashPassword } = require('../_lib/auth');
 const { getPatient, updatePatient, addArchiveEntry, audit, track, pushMsg } = require('../_lib/services');
 const { parse, registryCreateSchema } = require('../_lib/validate');
-const { calcBmi, riskStratify, suggestFollowupDate, MEDICAL_RECORD_KEYS, calcAge, parseIdCard } = require('@flwb/shared');
+const { calcBmi, riskStratify, suggestFollowupDate, MEDICAL_RECORD_KEYS, calcAge, parseIdCard, recordCompleteness, followupStatusOf, FOLLOWUP_STATUS_LABELS } = require('@flwb/shared');
 const { raiseAlert } = require('../_lib/clinic');
 const { ApiError } = require('../_lib/response');
 const logger = require('../_lib/logger');
@@ -29,11 +29,14 @@ async function listArchives({ query, user }) {
     : await db.zrevrange(K.allPatients, 0, -1);
   const patients = await Promise.all(pids.map(pid => getPatient(pid)));
 
+  const today = dateStr();
   const all = [];
   for (const p of patients.filter(Boolean)) {
     const raw = await db.get(K.medrec(p.id));
     let rec = null;
     if (raw) { try { rec = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { rec = null; } }
+    const comp = recordCompleteness(rec);
+    const fst = followupStatusOf(p.nextFollowupDate, today, p.lostAt);
     all.push({
       patientId: p.id,
       name: p.name,
@@ -41,22 +44,29 @@ async function listArchives({ query, user }) {
       age: (rec && rec.birthDate ? calcAge(rec.birthDate) : null) ?? p.age ?? null,
       phone: p.phone || '',
       visitNumber: (rec && rec.visitNumber) || p.visitNumber || '',
+      inpatientNumber: (rec && rec.inpatientNumber) || p.inpatientNumber || '',
       insuranceType: (rec && rec.insuranceType) || p.insuranceType || '',
       bmi: (rec && rec.bmi) ?? p.bmi ?? null,
       risk: (rec && rec.riskLevel) || p.risk || null,
       riskScore: (rec && rec.riskScore) ?? null,
       archived: !!rec,
+      incomplete: !!rec && !comp.complete,
+      missingItems: rec ? comp.missing.map(m => m.label) : [],
       version: rec ? rec.version : null,
       createdByName: rec ? rec.createdByName : '',
       updatedAt: rec ? rec.updatedAt : (p.archivedAt || null),
       createdAt: p.createdAt,
-      nextFollowupDate: p.nextFollowupDate || null
+      nextFollowupDate: p.nextFollowupDate || null,
+      followupStatus: fst.status || 'none',
+      followupStatusLabel: fst.status ? FOLLOWUP_STATUS_LABELS[fst.status] : '暂无随访',
+      followupDaysLeft: fst.daysLeft
     });
   }
 
   const stats = {
     archived: all.filter(r => r.archived).length,
     pending: all.filter(r => !r.archived).length,
+    incomplete: all.filter(r => r.incomplete).length,
     high: all.filter(r => r.archived && r.risk === 'high').length,
     mid: all.filter(r => r.archived && r.risk === 'mid').length,
     low: all.filter(r => r.archived && r.risk === 'low').length
@@ -65,12 +75,13 @@ async function listArchives({ query, user }) {
   let items = all;
   const kw = String(query.keyword || '').trim().toLowerCase();
   if (kw) {
-    items = items.filter(r => [r.name, r.phone, r.visitNumber].filter(Boolean).some(v => String(v).toLowerCase().includes(kw)));
+    items = items.filter(r => [r.name, r.phone, r.visitNumber, r.inpatientNumber].filter(Boolean).some(v => String(v).toLowerCase().includes(kw)));
   }
   if (query.risk && RISK_KEYS.includes(query.risk)) items = items.filter(r => r.risk === query.risk);
   const status = query.status || 'archived';
   if (status === 'archived') items = items.filter(r => r.archived);
   else if (status === 'pending') items = items.filter(r => !r.archived);
+  else if (status === 'incomplete') items = items.filter(r => r.incomplete);
 
   items.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
 
@@ -130,6 +141,7 @@ async function createRegistry({ body, user }) {
     mainDiagnosis: '脂肪肝（专病建档）',
     chiefComplaint: input.chiefComplaint || '',
     visitNumber: input.visitNumber || '',
+    inpatientNumber: input.inpatientNumber || '',
     visitDept: input.visitDept || '',
     insuranceType: input.insuranceType || '',
     pastHistory: '',
@@ -213,6 +225,7 @@ async function createRegistry({ body, user }) {
     riskScore: strat.score,
     nextFollowupDate,
     followupAutoSet: true,
+    completeness: recordCompleteness(record),
     modelSuggestion: { risk: strat.risk, score: strat.score, reasons: strat.reasons }
   };
 }

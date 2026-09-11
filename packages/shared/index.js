@@ -183,7 +183,8 @@
       { key: 'birthDate', label: '出生日期', type: 'date' },
       { key: 'idCard', label: '身份证号', type: 'text', maxLen: 18 },
       { key: 'phone', label: '联系电话', type: 'text', maxLen: 11 },
-      { key: 'visitNumber', label: '门诊号/住院号', type: 'text', maxLen: 40 },
+      { key: 'visitNumber', label: '门诊号', type: 'text', maxLen: 40 },
+      { key: 'inpatientNumber', label: '住院号', type: 'text', maxLen: 40 },
       { key: 'visitDate', label: '就诊日期', type: 'date' },
       { key: 'visitDept', label: '就诊科室', type: 'text', maxLen: 30 },
       { key: 'insuranceType', label: '医保类型', type: 'select', options: INSURANCE_TYPES }
@@ -242,6 +243,26 @@
 
   /** 建档字段 key 白名单（服务端存储过滤） */
   const MEDICAL_RECORD_KEYS = MEDICAL_RECORD_SECTIONS.flatMap(s => s.fields.map(f => f.key));
+
+  /**
+   * 档案完整度评估（专病建档「建档待完善」判定，前后端共用）：
+   * 关键信息或检验任一缺失 → 待完善。缺失项分组返回，供列表 tooltip 与保存提示。
+   * @param {object|null} record 专病病历（未建档传 null → 视为不适用，complete=false 且 missing 为空）
+   * @returns {{ complete: boolean, missing: Array<{ key: string, label: string }> }}
+   */
+  function recordCompleteness(record) {
+    if (!record) return { complete: false, missing: [] };
+    const has = (v) => v !== null && v !== undefined && v !== '';
+    const RULES = [
+      { key: 'bmi', label: '身高/体重（BMI）', ok: has(record.bmi) },
+      { key: 'ultrasound', label: '肝脏超声', ok: has(record.ultrasound) },
+      { key: 'liverLabs', label: '肝功能（ALT/AST/GGT 任一）', ok: has(record.alt) || has(record.ast) || has(record.ggt) },
+      { key: 'glucoseLabs', label: '血糖（空腹血糖/糖化血红蛋白 任一）', ok: has(record.fpg) || has(record.hba1c) },
+      { key: 'tg', label: '甘油三酯', ok: has(record.tg) }
+    ];
+    const missing = RULES.filter(r => !r.ok).map(({ key, label }) => ({ key, label }));
+    return { complete: missing.length === 0, missing };
+  }
 
   /* ==================== 筛查识别规则（信息化平台 · 模块1） ==================== */
   /** LIS 检验指标阈值规则（超出即触发筛查） */
@@ -455,6 +476,7 @@
     GENDER_OPTIONS,
     MEDICAL_RECORD_SECTIONS,
     MEDICAL_RECORD_KEYS,
+    recordCompleteness,
     /* 筛查识别 */
     SCREENING_LAB_RULES,
     SCREENING_BMI_RULES,

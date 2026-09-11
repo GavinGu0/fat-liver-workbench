@@ -274,7 +274,7 @@ const REG_ID = '110101197504124517'; // 合法 18 位（校验码 7）
 const regBody = {
   username: 'regpatient01', initialPasswordHash: sha('Abc123456'),
   name: '钱学兵', gender: 'male', birthDate: '1975-04-12', idCard: REG_ID, phone: '13900001111',
-  visitNumber: 'MZ2026091101', visitDate: today, visitDept: '肝病科', insuranceType: '职工医保',
+  visitNumber: 'MZ2026091101', inpatientNumber: 'ZY2026091101', visitDate: today, visitDept: '肝病科', insuranceType: '职工医保',
   height: 172, weight: 88, waist: 104, sbp: 142, dbp: 90,
   smokingHistory: '吸烟中', drinkingHistory: '经常', weeklyAlcoholGrams: 350, dietHabit: '高脂', activityLevel: '久坐',
   chiefComplaint: '体检发现转氨酶升高2周', presentIllness: '无特殊不适。', discoveryType: '无症状/体检发现',
@@ -314,6 +314,20 @@ const regPatientDetail = await call('server/patients/[id]/index.js', { ...docAut
 check('new patient risk synced high', regPatientDetail.data?.profile?.risk === 'high', regPatientDetail.data?.profile?.risk);
 const regMedrec = await call('server/medical-records.js', { ...docAuth, url: `/api/medical-records?patientId=${regCreate.data.patientId}`, query: { patientId: regCreate.data.patientId } });
 check('new medrec readable v1 with labExamDate', regMedrec.code === 0 && regMedrec.data.record?.version === 1 && regMedrec.data.record?.labExamDate === today, regMedrec.data?.record?.version);
+
+console.log('\n[18.6] 专病建档增强：住院号 / 档案完整度 / 随访状态');
+check('one-stop create completeness complete (key items present)', regCreate.data?.completeness?.complete === true, regCreate.data?.completeness);
+const regListNew = await call('server/registry/index.js', { ...docAuth, url: '/api/registry' });
+const regNewRow = regListNew.data.items.find(r => r.patientId === regCreate.data.patientId);
+check('registry row carries inpatientNumber', regNewRow?.inpatientNumber === 'ZY2026091101', regNewRow?.inpatientNumber);
+check('registry row carries followup status scheduled', regNewRow?.followupStatus === 'scheduled' && regNewRow?.followupStatusLabel === '已预约', [regNewRow?.followupStatus, regNewRow?.followupStatusLabel]);
+
+// 待完善：最小字段建档（缺 BMI/超声/肝功/血糖/甘油三酯）→ completeness 不完整 + 列表可筛出
+const incCreate = await call('server/medical-records.js', { ...docAuth, method: 'POST', url: '/api/medical-records', body: { patientId: 'p_1007', name: '孙明', gender: 'male', riskLevel: 'mid' } });
+check('medrec save returns incomplete completeness', incCreate.code === 0 && incCreate.data?.completeness?.complete === false && incCreate.data.completeness.missing.length >= 3, incCreate.data?.completeness);
+const regInc = await call('server/registry/index.js', { ...docAuth, url: '/api/registry?status=incomplete', query: { status: 'incomplete' } });
+check('registry incomplete filter + stats', regInc.code === 0 && regInc.data.stats.incomplete >= 1 && regInc.data.items.some(r => r.patientId === 'p_1007' && r.incomplete), regInc.data?.stats);
+check('incomplete row carries missing labels', regInc.data.items.some(r => r.patientId === 'p_1007' && Array.isArray(r.missingItems) && r.missingItems.length >= 3), null);
 
 console.log('\n[19] 筛查识别：列表/自动筛查/决策');
 const sc0 = await call('server/screening/index.js', { ...docAuth, url: '/api/screening' });

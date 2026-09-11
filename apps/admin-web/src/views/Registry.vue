@@ -1,5 +1,10 @@
 <template>
   <div>
+    <!-- 模块定位说明（对齐专病平台「专病建档」页首说明） -->
+    <el-alert type="info" :closable="false" class="mb-12 intro-alert">
+      复用电子病历，新建【脂肪肝专病管理表单】，嵌入现有电子病历。纳入后自动建立专病档案，支持院前筛查 - 院中建档 - 院内干预 - 院后随访全流程。
+    </el-alert>
+
     <!-- 统计 + 工具条 -->
     <div class="page-card mb-12">
       <div class="toolbar">
@@ -15,6 +20,9 @@
           </div>
           <div class="chip chip-low" :class="{ active: activeChip === 'low' }" @click="applyChip('low')">
             <span class="chip-num">{{ stats.low }}</span><span class="chip-label">低风险</span>
+          </div>
+          <div class="chip chip-warn" :class="{ active: activeChip === 'incomplete' }" @click="applyChip('incomplete')">
+            <span class="chip-num">{{ stats.incomplete }}</span><span class="chip-label">待完善</span>
           </div>
           <div class="chip chip-warn" :class="{ active: activeChip === 'pending' }" @click="applyChip('pending')">
             <span class="chip-num">{{ stats.pending }}</span><span class="chip-label">待建档</span>
@@ -32,6 +40,7 @@
           </el-select>
           <el-select v-model="query.status" style="width: 120px" @change="reload">
             <el-option value="archived" label="已建档" />
+            <el-option value="incomplete" label="待完善" />
             <el-option value="pending" label="待建档" />
             <el-option value="all" label="全部患者" />
           </el-select>
@@ -53,8 +62,11 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="门诊号/住院号" min-width="130">
+        <el-table-column label="门诊号" min-width="110">
           <template #default="{ row }">{{ row.visitNumber || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="住院号" min-width="110">
+          <template #default="{ row }">{{ row.inpatientNumber || '-' }}</template>
         </el-table-column>
         <el-table-column label="BMI" width="80">
           <template #default="{ row }">{{ row.bmi ?? '-' }}</template>
@@ -65,16 +77,29 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="随访排期" width="110">
+        <el-table-column label="随访情况" width="150">
           <template #default="{ row }">
-            <span v-if="row.nextFollowupDate">{{ row.nextFollowupDate }}</span>
-            <span v-else style="color:#86909c">未排期</span>
+            <div class="fu-cell">
+              <span v-if="row.nextFollowupDate" class="fu-date">{{ row.nextFollowupDate }}</span>
+              <span v-else class="fu-none">暂无随访</span>
+              <el-tag
+                v-if="row.followupStatus && row.followupStatus !== 'none'"
+                size="small" effect="light" :type="fuTagType(row.followupStatus)"
+              >{{ row.followupStatusLabel }}</el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="档案状态" width="120">
           <template #default="{ row }">
-            <el-tag v-if="row.archived" type="success" size="small" effect="light">已建档 v{{ row.version }}</el-tag>
-            <el-tag v-else type="warning" size="small" effect="light">待建档</el-tag>
+            <el-tooltip
+              v-if="row.archived && row.incomplete"
+              placement="top"
+              :content="`缺少关键信息或检验：${(row.missingItems || []).join('、')}`"
+            >
+              <el-tag type="warning" size="small" effect="light">待完善 v{{ row.version }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else-if="row.archived" type="success" size="small" effect="light">已建档 v{{ row.version }}</el-tag>
+            <el-tag v-else type="info" size="small" effect="light">待建档</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="建档医生" width="100">
@@ -121,11 +146,15 @@ import { RISK_LEVELS } from '@flwb/shared';
 const loading = ref(false);
 const items = ref([]);
 const total = ref(0);
-const stats = ref({ archived: 0, pending: 0, high: 0, mid: 0, low: 0 });
+const stats = ref({ archived: 0, pending: 0, incomplete: 0, high: 0, mid: 0, low: 0 });
 const activeChip = ref('archived');
 const query = reactive({ keyword: '', risk: '', status: 'archived', page: 1, size: 20 });
 
 const genderLabel = (g) => (g === 'male' ? '男' : g === 'female' ? '女' : '-');
+
+/** 随访状态 → 标签色：失访/逾期红色警示，今日/3日内橙色提醒，已预约蓝色 */
+const FU_TAG_TYPES = { lost: 'danger', overdue: 'danger', today: 'warning', soon3d: 'warning', scheduled: 'info' };
+const fuTagType = (s) => FU_TAG_TYPES[s] || 'info';
 
 async function load() {
   loading.value = true;
@@ -145,7 +174,7 @@ function reload() { query.page = 1; load(); }
 function applyChip(chip) {
   activeChip.value = chip;
   query.risk = ['high', 'mid', 'low'].includes(chip) ? chip : '';
-  query.status = chip === 'pending' ? 'pending' : chip === 'archived' ? 'archived' : 'all';
+  query.status = chip === 'pending' ? 'pending' : chip === 'incomplete' ? 'incomplete' : chip === 'archived' ? 'archived' : 'all';
   reload();
 }
 
@@ -178,5 +207,8 @@ onActivated(load);
 .pt-cell { display: flex; flex-direction: column; line-height: 1.4; }
 .pt-name { font-weight: 600; color: #1d2129; }
 .pt-sub { font-size: 12px; color: #86909c; }
+.fu-cell { display: flex; flex-direction: column; line-height: 1.4; gap: 2px; align-items: flex-start; }
+.fu-date { color: #4e5969; }
+.fu-none { color: #86909c; }
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 </style>

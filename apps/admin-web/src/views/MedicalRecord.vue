@@ -454,6 +454,17 @@ function copyCreated() {
   copyText(`脂肪肝专病管理平台\n登录用户名：${createdInfo.value.username}\n初始密码：${createdInfo.value.password}`);
 }
 
+/* 保存后完整度提醒：缺少关键信息或检验时提示医生（不阻断，档案已生效） */
+function warnIncomplete(completeness) {
+  if (!completeness || completeness.complete) return;
+  ElMessage({
+    message: `档案已保存，但缺少关键信息或检验：${completeness.missing.map(m => m.label).join('、')}`,
+    type: 'warning',
+    duration: 6000,
+    showClose: true
+  });
+}
+
 async function save() {
   let valid = true;
   try { await formRef.value.validate(); } catch { valid = false; }
@@ -477,10 +488,12 @@ async function save() {
       // 切换到编辑模式（更新 URL，防止刷新重复提交），路由监听会自动加载新档案
       router.replace({ path: '/medical-records', query: { patientId: d.patientId } });
       ElMessage.success(`建档完成，已按风险周期自动排期随访：${d.nextFollowupDate}`);
+      warnIncomplete(d.completeness);
     } else {
       const payload = { ...form, patientId: pid.value, version: record.value ? record.value.version : undefined };
       const d = await api.saveMedicalRecord(payload);
       ElMessage.success(`档案已保存（v${d.version}）${d.followupAutoSet ? `，已按风险周期自动排期随访：${d.nextFollowupDate}` : ''}`);
+      warnIncomplete(d.completeness);
       await loadFor(pid.value);
     }
   } catch (e) {

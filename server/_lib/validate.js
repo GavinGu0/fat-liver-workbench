@@ -171,6 +171,7 @@ const medicalRecordSchema = z.object({
   idCard: idCardField,
   phone: z.string().regex(/^1\d{10}$/, '联系电话格式不正确').optional().nullable().or(z.literal('')),
   visitNumber: strMax(40),
+  inpatientNumber: strMax(40),
   visitDate: dateStr.optional().nullable(),
   visitDept: strMax(30),
   insuranceType: z.enum(INSURANCE_TYPES).optional().nullable(),

@@ -10,7 +10,7 @@ const { getDb, K, dateStr } = require('./_lib/storage');
 const { requireDoctorOwn, requirePatientRead } = require('./_lib/patient-access');
 const { updatePatient, addArchiveEntry, audit, track } = require('./_lib/services');
 const { parse, medicalRecordSchema } = require('./_lib/validate');
-const { calcBmi, riskStratify, suggestFollowupDate, MEDICAL_RECORD_KEYS, LAB_FIELDS } = require('@flwb/shared');
+const { calcBmi, riskStratify, suggestFollowupDate, MEDICAL_RECORD_KEYS, LAB_FIELDS, recordCompleteness } = require('@flwb/shared');
 const { raiseAlert } = require('./_lib/clinic');
 const { ApiError } = require('./_lib/response');
 
@@ -120,6 +120,7 @@ module.exports = defineHandler({
       patientRisk: updated.risk,
       nextFollowupDate: updated.nextFollowupDate,
       followupAutoSet,
+      completeness: recordCompleteness(record),
       modelSuggestion: { risk: strat.risk, score: strat.score, reasons: strat.reasons },
       labFieldKeys: LAB_FIELDS.map(f => f.key)
     };

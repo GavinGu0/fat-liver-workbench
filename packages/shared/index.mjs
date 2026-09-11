@@ -39,6 +39,7 @@ export const DISCOVERY_TYPES = shared.DISCOVERY_TYPES;
 export const GENDER_OPTIONS = shared.GENDER_OPTIONS;
 export const MEDICAL_RECORD_SECTIONS = shared.MEDICAL_RECORD_SECTIONS;
 export const MEDICAL_RECORD_KEYS = shared.MEDICAL_RECORD_KEYS;
+export const recordCompleteness = shared.recordCompleteness;
 /* 筛查识别 */
 export const SCREENING_LAB_RULES = shared.SCREENING_LAB_RULES;
 export const SCREENING_BMI_RULES = shared.SCREENING_BMI_RULES;
