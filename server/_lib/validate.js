@@ -4,7 +4,8 @@ const { z } = require('zod');
 const { ApiError } = require('./response');
 const {
   MEALS, EXERCISE_TYPES, INTENSITIES, GUIDANCE_METHODS, GUIDANCE_CATEGORIES, MED_RANGES, LAB_FIELDS,
-  INSURANCE_TYPES, SMOKING_HISTORY, DRINKING_HISTORY, DIET_HABITS, ACTIVITY_LEVELS, YES_NO, DISCOVERY_TYPES
+  INSURANCE_TYPES, SMOKING_HISTORY, DRINKING_HISTORY, DIET_HABITS, ACTIVITY_LEVELS, YES_NO, DISCOVERY_TYPES,
+  validateIdCard
 } = require('@flwb/shared');
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
@@ -153,7 +154,10 @@ const smsSchema = z.object({
 });
 
 /* ==================== 医生端扩展：专病建档 / 筛查 / 预警 / 随访 / 质控 ==================== */
-const idCardRe = /^[0-9Xx]{15,18}$/;
+/** 身份证：空值放行；填写时 15/18 位格式 + 18 位出生日期与 GB11643 校验码实校验 */
+const idCardField = z.string().trim().transform(v => v.toUpperCase())
+  .refine(v => v === '' || validateIdCard(v).ok, v => ({ message: validateIdCard(v).msg || '身份证号格式不正确' }))
+  .optional().nullable();
 const strMax = (n) => z.string().trim().max(n, `内容不能超过${n}字`).optional().nullable();
 
 /** 脂肪肝专病建档（结构化电子病历 全字段） */
@@ -164,7 +168,7 @@ const medicalRecordSchema = z.object({
   name: z.string().trim().min(1, '姓名不能为空').max(20),
   gender: z.enum(['male', 'female'], { errorMap: () => ({ message: '性别不合法' }) }),
   birthDate: dateStr.optional().nullable(),
-  idCard: z.string().regex(idCardRe, '身份证号格式不正确').optional().nullable().or(z.literal('')),
+  idCard: idCardField,
   phone: z.string().regex(/^1\d{10}$/, '联系电话格式不正确').optional().nullable().or(z.literal('')),
   visitNumber: strMax(40),
   visitDate: dateStr.optional().nullable(),
@@ -201,6 +205,7 @@ const medicalRecordSchema = z.object({
   ultrasound: z.enum(['无异常', '轻度脂肪肝', '中度脂肪肝', '重度脂肪肝']).optional().nullable(),
   fibroScanCap: z.number().min(100, 'CAP超出合理范围(100-400)').max(400, 'CAP超出合理范围(100-400)').optional().nullable(),
   fibroScanE: z.number().min(1, 'E值超出合理范围(1-75)').max(75, 'E值超出合理范围(1-75)').optional().nullable(),
+  labExamDate: dateStr.optional().nullable(),
   /* 七、分层风险评估与干预方案 */
   riskLevel: z.enum(['low', 'mid', 'high'], { errorMap: () => ({ message: '请选择风险分层' }) }),
   riskReason: strMax(500),
@@ -216,6 +221,26 @@ const medicalRecordSchema = z.object({
 for (const f of LAB_FIELDS) {
   medicalRecordSchema.shape[f.key] = numInRange(f.key).optional().nullable();
 }
+
+/**
+ * 一站式建档（参考专病平台「新建档案」）：medicalRecordSchema 去除 patientId/version，
+ * 附加患者登录账号开通字段；出生日期必填（用于计算年龄建档）。
+ */
+const registryCreateSchema = medicalRecordSchema
+  .omit({ patientId: true, version: true, gender: true })
+  .extend({
+    /** 性别可省略：校验码已验证的身份证号可解析出性别（由 superRefine 保证二者必有其一） */
+    gender: z.enum(['male', 'female'], { errorMap: () => ({ message: '性别不合法' }) }).optional().nullable(),
+    username: z.string().trim().min(3, '登录用户名至少3位').max(30, '登录用户名最多30位')
+      .regex(/^[A-Za-z0-9_@.]+$/, '用户名仅支持字母、数字、下划线、@ 和 .'),
+    initialPasswordHash: z.string().min(32, '初始密码不合法').max(128, '初始密码不合法')
+  })
+  .superRefine((val, ctx) => {
+    if (!val.birthDate) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '请填写出生日期（建档需据此计算年龄）' });
+    if (!val.gender && !validateIdCard(val.idCard || '').ok) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gender'], message: '请选择性别（未填写时需提供可解析性别的身份证号）' });
+    }
+  });
 
 const screeningRunSchema = z.object({ action: z.literal('run') });
 
@@ -287,6 +312,7 @@ module.exports = {
   smsSchema,
   /* 医生端扩展 */
   medicalRecordSchema,
+  registryCreateSchema,
   screeningSchema,
   screeningDecisionSchema,
   alertsQuerySchema,

@@ -249,6 +249,60 @@ check('patient risk synced from medrec', mrPatient.data?.profile?.risk === 'high
 const mrHighHack = await call('server/medical-records.js', { ...patAuth, method: 'POST', body: { patientId: 'p_1004', name: '李秀英', gender: 'female', riskLevel: 'low' } });
 check('patient cannot create medrec -> 403', mrHighHack.code === 40300, mrHighHack);
 
+console.log('\n[18.5] 专病档案中心：列表 + 一站式建档');
+const regList0 = await call('server/registry/index.js', { ...docAuth, url: '/api/registry' });
+check('registry list default archived', regList0.code === 0 && regList0.data.stats.archived >= 1 && regList0.data.items.every(r => r.archived), regList0.data?.stats);
+check('registry list contains p_1003 v1', regList0.data.items.some(r => r.patientId === 'p_1003' && r.version >= 1), null);
+const regPending = await call('server/registry/index.js', { ...docAuth, url: '/api/registry?status=pending', query: { status: 'pending' } });
+check('registry pending filter + stats', regPending.code === 0 && regPending.data.items.every(r => !r.archived) && regPending.data.stats.pending >= 1, regPending.data?.stats);
+const regNurseView = await call('server/registry/index.js', { ...nurseAuth, url: '/api/registry' });
+check('nurse can view registry (staff)', regNurseView.code === 0, regNurseView);
+
+const REG_ID = '110101197504124517'; // 合法 18 位（校验码 7）
+const regBody = {
+  username: 'regpatient01', initialPasswordHash: sha('Abc123456'),
+  name: '钱学兵', gender: 'male', birthDate: '1975-04-12', idCard: REG_ID, phone: '13900001111',
+  visitNumber: 'MZ2026091101', visitDate: today, visitDept: '肝病科', insuranceType: '职工医保',
+  height: 172, weight: 88, waist: 104, sbp: 142, dbp: 90,
+  smokingHistory: '吸烟中', drinkingHistory: '经常', weeklyAlcoholGrams: 350, dietHabit: '高脂', activityLevel: '久坐',
+  chiefComplaint: '体检发现转氨酶升高2周', presentIllness: '无特殊不适。', discoveryType: '无症状/体检发现',
+  t2dm: '否', hypertension: '是', dyslipidemia: '是', hyperuricemia: '否', metabolicSyndrome: '否', cvd: '否',
+  ultrasound: '中度脂肪肝', fibroScanCap: 300, fibroScanE: 9.2, labExamDate: today,
+  alt: 96, ggt: 88, tg: 2.8, fpg: 6.3,
+  riskLevel: 'high', riskReason: '超重+高血压+血脂异常+中度脂肪肝', interventionDiet: '限酒低脂饮食', revisitPlan: '1个月后复查肝功+超声'
+};
+const regCreate = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: regBody });
+check('one-stop registry create', regCreate.code === 0 && !!regCreate.data.patientId && !!regCreate.data.userId, regCreate);
+check('registry auto followup by risk', regCreate.data?.followupAutoSet === true && regCreate.data?.nextFollowupDate > today, regCreate.data?.nextFollowupDate);
+check('registry model score attached', typeof regCreate.data?.riskScore === 'number' && Array.isArray(regCreate.data?.modelSuggestion?.reasons), regCreate.data?.modelSuggestion);
+
+const regLogin = await call('server/auth/login.js', { method: 'POST', body: { mode: 'password', username: 'regpatient01', passwordHash: sha('Abc123456') } });
+check('created account can login', regLogin.code === 0 && regLogin.data.user.role === 'patient', regLogin);
+
+const regDup = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: { ...regBody, name: '重复用户名' } });
+check('duplicate username -> 409', regDup.code === 40901, regDup);
+
+const regBadId = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: { ...regBody, username: 'regpatient02', idCard: '110101197504124511' } });
+check('invalid idCard checksum -> 422', regBadId.code === 42200, regBadId);
+
+const regNurseCreate = await call('server/registry/index.js', { ...nurseAuth, method: 'POST', url: '/api/registry', body: regBody });
+check('nurse cannot one-stop create -> 403', regNurseCreate.code === 40300, regNurseCreate);
+
+// 性别缺省 → 由身份证解析补全（110101197504124525 校验码合法，第17位偶数 → female）
+const regGenderFallback = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: { ...regBody, username: 'regpatient03', phone: '13900002222', gender: undefined, idCard: '110101197504124525' } });
+check('gender fallback from idcard create ok', regGenderFallback.code === 0 && !!regGenderFallback.data.patientId, regGenderFallback);
+const regGenderFDetail = await call('server/patients/[id]/index.js', { ...docAuth, url: `/api/patients/${regGenderFallback.data.patientId}`, query: { id: regGenderFallback.data.patientId } });
+check('patient gender from idcard = female', regGenderFDetail.data?.profile?.gender === 'female', regGenderFDetail.data?.profile?.gender);
+
+// 性别与身份证均缺失 → 422 拦截
+const regNoGender = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: { ...regBody, username: 'regpatient04', phone: '13900003333', gender: undefined, idCard: '' } });
+check('no gender & no idcard -> 422', regNoGender.code === 42200, regNoGender);
+
+const regPatientDetail = await call('server/patients/[id]/index.js', { ...docAuth, url: `/api/patients/${regCreate.data.patientId}`, query: { id: regCreate.data.patientId } });
+check('new patient risk synced high', regPatientDetail.data?.profile?.risk === 'high', regPatientDetail.data?.profile?.risk);
+const regMedrec = await call('server/medical-records.js', { ...docAuth, url: `/api/medical-records?patientId=${regCreate.data.patientId}`, query: { patientId: regCreate.data.patientId } });
+check('new medrec readable v1 with labExamDate', regMedrec.code === 0 && regMedrec.data.record?.version === 1 && regMedrec.data.record?.labExamDate === today, regMedrec.data?.record?.version);
+
 console.log('\n[19] 筛查识别：列表/自动筛查/决策');
 const sc0 = await call('server/screening/index.js', { ...docAuth, url: '/api/screening' });
 check('screening list seeded', sc0.code === 0 && sc0.data.stats.pending >= 2, sc0.data?.stats);

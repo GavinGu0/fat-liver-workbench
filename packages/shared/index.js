@@ -115,6 +115,48 @@
     return Math.round((weightKg / (h * h)) * 10) / 10;
   }
 
+  /* ==================== 身份证 & 年龄工具（专病建档共用，前后端一致） ==================== */
+  const ID_CARD_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+  const ID_CARD_CHECK_CODES = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
+
+  /**
+   * 身份证号校验：15 位（一代证）仅格式校验；18 位校验出生日期合法性 + GB11643 校验码
+   * @returns {{ ok: boolean, msg: string }}
+   */
+  function validateIdCard(id) {
+    const s = String(id || '').trim().toUpperCase();
+    if (!/^\d{15}$/.test(s) && !/^\d{17}[\dX]$/.test(s)) return { ok: false, msg: '身份证号应为15或18位' };
+    if (s.length === 15) return { ok: true, msg: '' };
+    const y = Number(s.slice(6, 10)), m = Number(s.slice(10, 12)), d = Number(s.slice(12, 14));
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (y < 1900 || dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d || dt.getTime() > Date.now()) {
+      return { ok: false, msg: '身份证出生日期不合法' };
+    }
+    let sum = 0;
+    for (let i = 0; i < 17; i++) sum += Number(s[i]) * ID_CARD_WEIGHTS[i];
+    if (ID_CARD_CHECK_CODES[sum % 11] !== s[17]) return { ok: false, msg: '身份证校验码不正确，请核对' };
+    return { ok: true, msg: '' };
+  }
+
+  /** 从合法身份证解析出生日期（YYYY-MM-DD）与性别（male/female），不合法返回 null */
+  function parseIdCard(id) {
+    const s = String(id || '').trim().toUpperCase();
+    if (!validateIdCard(s).ok) return null;
+    if (s.length === 15) {
+      return { birthDate: `19${s.slice(6, 8)}-${s.slice(8, 10)}-${s.slice(10, 12)}`, gender: Number(s[14]) % 2 === 1 ? 'male' : 'female' };
+    }
+    return { birthDate: `${s.slice(6, 10)}-${s.slice(10, 12)}-${s.slice(12, 14)}`, gender: Number(s[16]) % 2 === 1 ? 'male' : 'female' };
+  }
+
+  /** 按出生日期（YYYY-MM-DD）计算周岁（上海时区），不合法返回 null */
+  function calcAge(birthDate) {
+    if (!birthDate || !/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) return null;
+    const today = todayOfStr();
+    let age = Number(today.slice(0, 4)) - Number(birthDate.slice(0, 4));
+    if (today.slice(5) < birthDate.slice(5)) age -= 1; // MM-DD 未到生日减一
+    return age >= 0 && age < 150 ? age : null;
+  }
+
   /* ==================== 脂肪肝专病建档（结构化电子病历 · 单一数据源） ==================== */
   /** 选项枚举（信息化平台文档「脂肪肝患者结构化电子病历」） */
   const INSURANCE_TYPES = ['职工医保', '居民医保', '自费', '其他'];
@@ -182,6 +224,7 @@
       { key: 'ultrasound', label: '肝脏超声', type: 'select', options: ['无异常', '轻度脂肪肝', '中度脂肪肝', '重度脂肪肝'] },
       { key: 'fibroScanCap', label: 'FibroScan CAP(dB/m)', type: 'number', min: 100, max: 400 },
       { key: 'fibroScanE', label: 'FibroScan 肝脏硬度值 E(kPa)', type: 'number', min: 1, max: 75 },
+      { key: 'labExamDate', label: '检验检查日期', type: 'date' },
       ...LAB_FIELDS.map(f => ({ key: f.key, label: `${f.label}(${f.unit})`, type: 'number', range: f.key, group: f.group }))
     ] },
     { key: 'assessment', title: '七、分层风险评估与干预方案', fields: [
@@ -396,6 +439,9 @@
     MESSAGE_TYPES,
     CLIENT_SALT,
     calcBmi,
+    validateIdCard,
+    parseIdCard,
+    calcAge,
     checkMedicalRange,
     checkAdvisory,
     /* 专病建档 */

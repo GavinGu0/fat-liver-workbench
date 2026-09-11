@@ -12,7 +12,14 @@ const routes = [
       { path: 'patients', name: 'patients', component: () => import('../views/Patients.vue'), meta: { title: '患者管理' } },
       { path: 'patients/:id', name: 'patientDetail', component: () => import('../views/PatientDetail.vue'), meta: { title: '患者详情' } },
       { path: 'mdt', name: 'mdt', component: () => import('../views/Mdt.vue'), meta: { title: 'MDT会诊', roles: ['doctor'] } },
-      { path: 'medical-records', name: 'medicalRecord', component: () => import('../views/MedicalRecord.vue'), meta: { title: '专病建档', roles: ['doctor'] } },
+      { path: 'registry', name: 'registry', component: () => import('../views/Registry.vue'), meta: { title: '专病档案', roles: ['doctor'] } },
+      {
+        path: 'medical-records', name: 'medicalRecord', component: () => import('../views/MedicalRecord.vue'), meta: { title: '专病建档', roles: ['doctor'] },
+        // 表单页仅在有上下文时可达（一站式新建 / 编辑指定患者）；裸访问重定向回档案列表，避免与列表页混淆
+        beforeEnter: (to) => {
+          if (to.query.mode !== 'new' && !to.query.patientId) return { path: '/registry', replace: true };
+        }
+      },
       { path: 'screening', name: 'screening', component: () => import('../views/Screening.vue'), meta: { title: '筛查识别', roles: ['doctor'] } },
       { path: 'followup', name: 'followup', component: () => import('../views/Followup.vue'), meta: { title: '随访管理', roles: ['doctor'] } },
       { path: 'alerts', name: 'alerts', component: () => import('../views/Alerts.vue'), meta: { title: '预警提醒', roles: ['doctor'] } },

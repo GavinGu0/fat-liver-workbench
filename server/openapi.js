@@ -45,6 +45,10 @@ const spec = {
       get: { tags: ['doctor'], summary: '专病档案查看（?patientId=，含模型风险分层建议）', security: [{ bearerAuth: [] }], parameters: [{ name: 'patientId', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'ok' } } },
       post: { tags: ['doctor'], summary: '脂肪肝专病建档/更新（全字段校验+BMI自动计算+风险分层+随访周期自动排期，高危自动 MDT 预警）', security: [{ bearerAuth: [] }], responses: { '200': { description: 'ok' }, '409': { description: '档案版本冲突' } } }
     },
+    '/registry': {
+      get: { tags: ['doctor'], summary: '专病档案中心列表（keyword/risk/status 筛选+统计+分页；医生本人患者，护士全量只读）', security: [{ bearerAuth: [] }], parameters: [{ name: 'keyword', in: 'query', schema: { type: 'string' } }, { name: 'risk', in: 'query', schema: { type: 'string', enum: ['high', 'mid', 'low'] } }, { name: 'status', in: 'query', schema: { type: 'string', enum: ['archived', 'pending', 'all'], default: 'archived' } }, { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } }, { name: 'size', in: 'query', schema: { type: 'integer', default: 20 } }], responses: { '200': { description: 'ok' } } },
+      post: { tags: ['doctor'], summary: '一站式建档（新建患者：开通登录账号 username/initialPasswordHash + 患者档案 + 专病病历 + 风险分层 + 随访排期 + 高危 MDT 预警）', security: [{ bearerAuth: [] }], responses: { '200': { description: 'ok' }, '409': { description: '用户名/手机号已存在' } } }
+    },
     '/screening': {
       get: { tags: ['doctor'], summary: '筛查案例列表（status/keyword 筛选+统计）', security: [{ bearerAuth: [] }], parameters: [{ name: 'status', in: 'query', schema: { type: 'string', enum: ['pending', 'accepted', 'rejected'] } }, { name: 'keyword', in: 'query', schema: { type: 'string' } }], responses: { '200': { description: 'ok' } } },
       post: { tags: ['doctor'], summary: '筛查执行：action=run 自动扫描（检验/BMI/超声规则引擎）| action=manual 手工登记', security: [{ bearerAuth: [] }], responses: { '200': { description: 'ok' } } }

@@ -23,6 +23,9 @@ export const MDT_STATUS_LABELS = shared.MDT_STATUS_LABELS;
 export const MESSAGE_TYPES = shared.MESSAGE_TYPES;
 export const CLIENT_SALT = shared.CLIENT_SALT;
 export const calcBmi = shared.calcBmi;
+export const validateIdCard = shared.validateIdCard;
+export const parseIdCard = shared.parseIdCard;
+export const calcAge = shared.calcAge;
 export const checkMedicalRange = shared.checkMedicalRange;
 export const checkAdvisory = shared.checkAdvisory;
 /* 专病建档 */

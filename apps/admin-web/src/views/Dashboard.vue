@@ -109,7 +109,7 @@
         <div class="page-card mb-12">
           <h4 style="margin-top:0">🚀 快捷入口</h4>
           <div class="quick-entry">
-            <el-button plain @click="$router.push('/medical-records')"><el-icon><Notebook /></el-icon>&nbsp;专病建档</el-button>
+            <el-button plain @click="$router.push('/registry')"><el-icon><Notebook /></el-icon>&nbsp;专病建档</el-button>
             <el-button plain @click="$router.push('/screening')"><el-icon><Search /></el-icon>&nbsp;筛查识别<span v-if="d.metrics.screeningPending" class="mini-badge">{{ d.metrics.screeningPending }}</span></el-button>
             <el-button plain @click="$router.push('/followup')"><el-icon><Calendar /></el-icon>&nbsp;随访管理</el-button>
             <el-button plain @click="$router.push('/quality')"><el-icon><DataAnalysis /></el-icon>&nbsp;质量看板</el-button>
@@ -175,7 +175,7 @@ const metricCards = computed(() => {
   if (auth.isDoctor) {
     return [
       { label: '管理患者总数', value: d.metrics.totalPatients },
-      { label: '已专病建档', value: d.metrics.archived, to: '/medical-records' },
+      { label: '已专病建档', value: d.metrics.archived, to: '/registry' },
       { label: '待处理预警', value: d.metrics.alertsOpen, warn: d.metrics.alertsOpen > 0, to: '/alerts' },
       { label: '筛查待处理', value: d.metrics.screeningPending, warn: d.metrics.screeningPending > 0, to: '/screening' }
     ];

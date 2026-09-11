@@ -13,7 +13,7 @@
           <el-icon><User /></el-icon><span>患者管理</span>
         </el-menu-item>
         <template v-if="auth.isDoctor">
-          <el-menu-item index="/medical-records">
+          <el-menu-item index="/registry">
             <el-icon><Notebook /></el-icon><span>专病建档</span>
           </el-menu-item>
           <el-menu-item index="/screening">

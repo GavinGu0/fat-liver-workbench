@@ -28,6 +28,8 @@ export const api = {
   mdtAction: (id, data) => http.post(`/patients/${id}/mdt`, data),
 
   /* 医生 · 专病建档 */
+  registryList: (params) => http.get('/registry', { params }),
+  createRegistry: (data) => http.post('/registry', data),
   medicalRecord: (patientId) => http.get('/medical-records', { params: { patientId } }),
   saveMedicalRecord: (data) => http.post('/medical-records', data),
 
