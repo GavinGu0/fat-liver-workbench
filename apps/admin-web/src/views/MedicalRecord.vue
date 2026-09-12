@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div v-loading="!isNew && loadingRecord && !patient.id" element-loading-text="正在加载患者档案…">
     <!-- 顶部：返回 + 模式/患者概要 -->
     <div class="page-card mb-12">
       <div class="top-row">
@@ -10,16 +10,14 @@
           <el-tag effect="light">一站式新建</el-tag>
           <span class="top-hint">为患者完成专病建档并开通院外自助记录账号，保存后自动按风险周期排期随访</span>
         </template>
-        <template v-else>
-          <el-select v-model="pid" filterable placeholder="搜索选择患者进行建档" style="width:280px" @change="loadFor">
-            <el-option v-for="p in patientOptions" :key="p.id" :value="p.id" :label="`${p.name}（${p.gender === 'male' ? '男' : '女'} / ${p.age}岁 / ${p.bmi ?? '-'} BMI）`" />
-          </el-select>
-          <template v-if="patient.id">
-            <RiskTag :risk="patient.risk" />
-            <el-tag v-if="record" size="small" type="success">已建档 v{{ record.version }}</el-tag>
-            <el-tag v-else size="small" type="info">未建档</el-tag>
-            <span v-if="record" class="top-hint">更新于 {{ fmtTime(record.updatedAt) }} · 建档医生 {{ record.createdByName }}</span>
-          </template>
+        <template v-else-if="loadingRecord && !patient.id">
+          <span class="top-hint">正在加载患者档案…</span>
+        </template>
+        <template v-else-if="patient.id">
+          <RiskTag :risk="patient.risk" />
+          <el-tag v-if="record" size="small" type="success">已建档 v{{ record.version }}</el-tag>
+          <el-tag v-else size="small" type="info">未建档</el-tag>
+          <span v-if="record" class="top-hint">更新于 {{ fmtTime(record.updatedAt) }} · 建档医生 {{ record.createdByName }}</span>
         </template>
       </div>
       <el-descriptions v-if="!isNew && patient.id" :column="4" size="small" style="margin-top:10px">
@@ -32,9 +30,6 @@
         <el-descriptions-item label="下次随访">{{ patient.nextFollowupDate || '未排期' }}</el-descriptions-item>
         <el-descriptions-item label="主诊断">{{ patient.mainDiagnosis || '-' }}</el-descriptions-item>
       </el-descriptions>
-      <el-empty v-if="!isNew && !patient.id" description="请先选择患者，或一站式新建患者档案" :image-size="70">
-        <el-button type="primary" plain @click="$router.push('/medical-records?mode=new')">新建患者档案</el-button>
-      </el-empty>
     </div>
 
     <!-- 建档表单 -->
@@ -219,11 +214,11 @@ const router = useRouter();
 const auth = useAuthStore();
 
 const pid = ref(route.query.patientId || '');
-const patientOptions = ref([]);
 const patient = reactive({ id: '' });
 const record = ref(null);
 const serverSuggestion = ref(null);
 const saving = ref(false);
+const loadingRecord = ref(false);
 const formRef = ref(null);
 const showPwd = ref(false);
 const currentSection = ref('');
@@ -388,17 +383,10 @@ function genPassword() {
   showPwd.value = true;
 }
 
-/* 载入患者选项与档案 */
-async function loadPatients() {
-  if (patientOptions.value.length) return;
-  try {
-    const d = await api.patients({ page: 1, size: 100 });
-    patientOptions.value = d.items;
-  } catch { /* 忽略 */ }
-}
-
+/* 载入指定患者档案（编辑上下文只能由列表页路由带入，不再提供患者下拉选择） */
 async function loadFor(val) {
   if (!val) return;
+  loadingRecord.value = true;
   try {
     const d = await api.medicalRecord(val);
     Object.keys(patient).forEach(k => delete patient[k]);
@@ -407,7 +395,12 @@ async function loadFor(val) {
     record.value = d.record;
     serverSuggestion.value = d.suggestion;
     fillForm();
-  } catch (e) { ElMessage.error(e.message); }
+  } catch (e) {
+    ElMessage.error(e.message || '档案加载失败');
+    router.replace('/registry');
+  } finally {
+    loadingRecord.value = false;
+  }
 }
 
 /* 预填：优先存量档案 → 患者基础信息 */
@@ -509,7 +502,10 @@ async function save() {
 
 /* 路由与生命周期 */
 watch(() => route.query.mode, (v) => { if (v === 'new') initForNew(); });
-watch(() => route.query.patientId, (v) => { if (v && v !== pid.value) { pid.value = v; loadFor(v); } });
+watch(() => route.query.patientId, (v) => {
+  if (v && v !== pid.value) { pid.value = v; loadFor(v); }
+  else if (!v && !isNew.value) router.replace('/registry'); // 同路由裸访问兜底：无患者上下文回列表页
+});
 
 onBeforeRouteLeave(async (to, from) => {
   if (!dirty.value) return true;
@@ -528,10 +524,10 @@ onMounted(() => {
   window.addEventListener('beforeunload', onBeforeUnload);
   window.addEventListener('scroll', onScroll, true);
   if (isNew.value) initForNew();
-  else { loadPatients(); if (pid.value) loadFor(pid.value); }
+  else if (pid.value) loadFor(pid.value);
+  else router.replace('/registry'); // 组件级兜底：无新建/患者上下文时回列表页（双保险，路由守卫之外）
 });
 onActivated(() => {
-  loadPatients();
   if (!isNew.value && pid.value && !record.value) loadFor(pid.value);
 });
 onBeforeUnmount(() => {

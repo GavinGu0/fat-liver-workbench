@@ -89,7 +89,8 @@ async function submit() {
       user = await auth.login({ mode: 'sms', phone: smsForm.phone.trim(), code: smsForm.code.trim() });
     }
     if (user.role === 'patient') {
-      // 患者误入医护端 → 跳转患者端
+      // 患者误入医护端 → 清空医护端命名空间中的患者凭证后再跳患者端，避免会话串染影响后续医护登录
+      auth.clear();
       window.location.href = '/patient/';
       return;
     }

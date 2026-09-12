@@ -43,6 +43,7 @@ async function listArchives({ query, user }) {
       gender: p.gender,
       age: (rec && rec.birthDate ? calcAge(rec.birthDate) : null) ?? p.age ?? null,
       phone: p.phone || '',
+      mainDiagnosis: (rec && rec.riskLevel ? '脂肪肝' : '') || p.mainDiagnosis || '',
       visitNumber: (rec && rec.visitNumber) || p.visitNumber || '',
       inpatientNumber: (rec && rec.inpatientNumber) || p.inpatientNumber || '',
       insuranceType: (rec && rec.insuranceType) || p.insuranceType || '',

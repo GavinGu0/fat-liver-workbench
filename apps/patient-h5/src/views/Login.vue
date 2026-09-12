@@ -135,6 +135,11 @@ async function submit() {
         }
       });
     }
+    // 角色校验：医护账号不允许进入患者端，避免医护 token 污染患者端会话命名空间
+    if (d.user && d.user.role !== 'patient') {
+      err.value = '该账号为医护账号，请使用医护端工作台登录';
+      return;
+    }
     tokenStore.set(d.accessToken, d.refreshToken);
     localStorage.setItem('flwb_p_user', JSON.stringify(d.user));
     router.replace('/');

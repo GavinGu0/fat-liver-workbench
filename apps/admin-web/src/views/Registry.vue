@@ -20,7 +20,7 @@
           </div>
         </div>
         <el-button type="primary" @click="$router.push('/medical-records?mode=new')">
-          <el-icon style="margin-right:4px"><Plus /></el-icon>新建档案
+          <el-icon style="margin-right:4px"><Plus /></el-icon>新增患者建档
         </el-button>
       </div>
     </div>
@@ -42,6 +42,12 @@
         <el-table-column label="性别" width="70">
           <template #default="{ row }">{{ genderLabel(row.gender) }}</template>
         </el-table-column>
+        <el-table-column label="专病类型" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.mainDiagnosis" size="small" effect="light">{{ row.mainDiagnosis }}</el-tag>
+            <span v-else class="td-dim">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="BMI" width="80">
           <template #default="{ row }">{{ row.bmi ?? '-' }}</template>
         </el-table-column>
@@ -51,10 +57,10 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="纳入" width="120">
+        <el-table-column label="建档时间" width="120">
           <template #default="{ row }">
             <span v-if="row.archivedAt">{{ fmtDate(row.archivedAt) }}</span>
-            <span v-else class="td-dim">未纳入</span>
+            <span v-else class="td-dim">未建档</span>
           </template>
         </el-table-column>
         <el-table-column label="处理情况" width="130">
@@ -70,12 +76,13 @@
             <el-tag v-else type="info" size="small" effect="light">待建档</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="$router.push(`/patients/${row.patientId}`)">详情</el-button>
             <el-button link type="primary" @click="$router.push(`/medical-records?patientId=${row.patientId}`)">
               {{ row.archived ? '编辑' : '去建档' }}
             </el-button>
+            <el-button v-if="row.archived" link type="danger" @click="removeRow(row)">删除</el-button>
           </template>
         </el-table-column>
         <template #empty>
@@ -95,7 +102,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, onActivated } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
 import { api } from '../api';
 import { fmtDate } from '../utils/format';
@@ -128,6 +135,33 @@ function applyChip(chip) {
   if (query.status === chip) return;
   query.status = chip;
   reload();
+}
+
+/** 安全删除建档记录：需输入患者姓名二次确认（防误删） */
+async function removeRow(row) {
+  try {
+    await ElMessageBox.prompt(
+      `将删除患者「${row.name}」的专病建档记录（v${row.version ?? '-'}）：` +
+      `档案回到待建档状态，自动排期的随访随之取消；患者基础信息与院外日常记录保留。` +
+      `此操作不可恢复，请输入患者姓名「${row.name}」确认执行。`,
+      '删除建档记录',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
+        inputPlaceholder: `输入患者姓名：${row.name}`,
+        inputValidator: (v) => (v && v.trim() === row.name ? true : `请输入患者姓名「${row.name}」以确认`)
+      }
+    );
+  } catch { return; } // 用户取消
+  try {
+    await api.deleteRegistry(row.patientId);
+    ElMessage.success(`已删除「${row.name}」的建档记录，患者回到待建档状态`);
+    load();
+  } catch (e) {
+    ElMessage.error(e.message || '删除失败，请重试');
+  }
 }
 
 onMounted(load);

@@ -44,6 +44,7 @@ const ROUTES = [
   ['mdt', require('../server/mdt/index.js')],
   ['medical-records', require('../server/medical-records.js')],
   ['registry', require('../server/registry/index.js')],
+  ['registry/[id]', require('../server/registry/[id]/index.js')],
   ['screening/[id]/decision', require('../server/screening/[id]/decision.js')],
   ['screening', require('../server/screening/index.js')],
   ['alerts/read-all', require('../server/alerts/read-all.js')],

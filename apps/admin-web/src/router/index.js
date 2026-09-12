@@ -40,6 +40,7 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const auth = useAuthStore();
+  auth.sync(); // 每次导航以 localStorage 最新会话为准：换号/登出后不再停留在旧角色页面
   if (!to.meta.public && !auth.isLogin) return { name: 'login', query: { redirect: to.fullPath } };
   if (to.meta.roles && auth.user && !to.meta.roles.includes(auth.user.role)) {
     return { name: 'dashboard' };

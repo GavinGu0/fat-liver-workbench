@@ -329,6 +329,21 @@ const regInc = await call('server/registry/index.js', { ...docAuth, url: '/api/r
 check('registry incomplete filter + stats', regInc.code === 0 && regInc.data.stats.incomplete >= 1 && regInc.data.items.some(r => r.patientId === 'p_1007' && r.incomplete), regInc.data?.stats);
 check('incomplete row carries missing labels', regInc.data.items.some(r => r.patientId === 'p_1007' && Array.isArray(r.missingItems) && r.missingItems.length >= 3), null);
 
+console.log('\n[18.7] 专病建档删除：权限 / 状态回收 / 重复删除');
+const delPid = regGenderFallback.data.patientId;
+const delNurse = await call('server/registry/[id]/index.js', { ...nurseAuth, method: 'DELETE', url: `/api/registry/${delPid}`, query: { id: delPid } });
+check('nurse cannot delete registry -> 403', delNurse.code === 40300, delNurse);
+const delOk = await call('server/registry/[id]/index.js', { ...docAuth, method: 'DELETE', url: `/api/registry/${delPid}`, query: { id: delPid } });
+check('doctor deletes registry ok', delOk.code === 0 && delOk.data?.deleted === true && delOk.data?.patientId === delPid, delOk);
+const delMedrec = await call('server/medical-records.js', { ...docAuth, url: `/api/medical-records?patientId=${delPid}`, query: { patientId: delPid } });
+check('medrec removed after delete', delMedrec.code === 0 && delMedrec.data.record === null, delMedrec.data?.record);
+const delPending = await call('server/registry/index.js', { ...docAuth, url: '/api/registry?status=pending', query: { status: 'pending' } });
+check('deleted patient back to pending list', delPending.code === 0 && delPending.data.items.some(r => r.patientId === delPid && !r.archived), delPending.data?.stats);
+const delDetail = await call('server/patients/[id]/index.js', { ...docAuth, url: `/api/patients/${delPid}`, query: { id: delPid } });
+check('patient profile kept after delete (archivedAt cleared)', !!delDetail.data?.profile?.id && delDetail.data.profile.archivedAt == null, delDetail.data?.profile);
+const delAgain = await call('server/registry/[id]/index.js', { ...docAuth, method: 'DELETE', url: `/api/registry/${delPid}`, query: { id: delPid } });
+check('delete non-archived again -> 404', delAgain.code === 40404, delAgain);
+
 console.log('\n[19] 筛查识别：列表/自动筛查/决策');
 const sc0 = await call('server/screening/index.js', { ...docAuth, url: '/api/screening' });
 check('screening list seeded', sc0.code === 0 && sc0.data.stats.pending >= 2, sc0.data?.stats);
