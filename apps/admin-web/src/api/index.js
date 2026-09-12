@@ -5,6 +5,7 @@ export const api = {
   login: (data) => http.post('/auth/login', data),
   sendSms: (phone) => http.post('/auth/sms', { phone }),
   logout: (refreshToken) => http.post('/auth/logout', { refreshToken }),
+  loginLogs: (params) => http.get('/auth/login-logs', { params }),
   config: () => http.get('/config'),
 
   /* 消息中心（医护端） */
@@ -56,6 +57,8 @@ export const api = {
   followupExecute: (id, data) => http.post(`/followups/${id}/execute`, data),
   followupLost: (id, data) => http.post(`/followups/${id}/lost`, data),
   followupRemind: (data) => http.post('/followups/remind', data),
+  remindLog: (params) => http.get('/followups/remind-log', { params }),
+  remindResend: (notifyId) => http.post('/followups/remind-log', { notifyId }),
 
   /* 医生 · 质量看板 */
   quality: (params) => http.get('/quality', { params }),
@@ -63,6 +66,11 @@ export const api = {
   /* 护理端 */
   education: () => http.get('/nurse/education'),
   pushEducation: (data) => http.post('/nurse/education', data),
+  materials: () => http.get('/nurse/materials'),
+  createMaterial: (data) => http.post('/nurse/materials', data),
+  updateMaterial: (data) => http.put('/nurse/materials', data),
+  toggleMaterial: (id) => http.put('/nurse/materials', { id, action: 'toggle' }),
+  deleteMaterial: (id) => http.delete('/nurse/materials', { data: { id } }),
   guidance: (params) => http.get('/nurse/guidance', { params }),
   createGuidance: (data) => http.post('/nurse/guidance', data),
   templates: () => http.get('/nurse/templates'),

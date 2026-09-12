@@ -51,10 +51,11 @@ async function addArchiveEntry(patientId, entry) {
 
 /* ---------------- 消息推送（站内信，患者/医护共用） ---------------- */
 async function pushMsg(userId, msg) {
-  if (!userId) return;
+  if (!userId) return null;
   const db = await getDb();
+  const mid = 'm_' + randomUUID().replace(/-/g, '').slice(0, 16);
   const item = JSON.stringify({
-    mid: 'm_' + randomUUID().replace(/-/g, '').slice(0, 16),
+    mid,
     ts: Date.now(),
     read: false,
     ...msg
@@ -62,7 +63,8 @@ async function pushMsg(userId, msg) {
   await db.lpush(K.msg(userId), item);
   await db.ltrim(K.msg(userId), 0, 199);
   await db.incr(K.msgUnread(userId));
-  logger.info('msg.push', { to: userId, type: msg.type, title: msg.title });
+  logger.info('msg.push', { to: userId, type: msg.type, title: msg.title, mid });
+  return mid;
 }
 
 async function listMsgs(userId, limit = 50) {

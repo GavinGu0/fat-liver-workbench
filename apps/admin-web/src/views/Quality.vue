@@ -17,6 +17,17 @@
         <el-option label="低风险" value="low" />
       </el-select>
       <div style="flex:1"></div>
+      <el-dropdown @command="exportAll">
+        <el-button size="small">
+          📥 导出全部趋势数据<el-icon style="margin-left:4px"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="csv">CSV 格式</el-dropdown-item>
+            <el-dropdown-item command="excel">Excel 格式</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <span style="color:#86909c;font-size:12px">
         统计人群 {{ cohort.total }} 人 · {{ window.from }} ~ {{ window.to }}
       </span>
@@ -40,14 +51,38 @@
       </el-col>
     </el-row>
 
-    <el-row :gutter="12">
-      <!-- 趋势 -->
-      <el-col :span="14">
-        <div class="page-card mb-12">
-          <h4 style="margin-top:0">📈 业务趋势（按天）</h4>
-          <TrendChart :series="trendSeries" height="300px" />
+    <!-- 业务趋势：4 个独立分析图表 -->
+    <el-row :gutter="12" class="mb-12">
+      <el-col :span="12" v-for="c in chartConfigs" :key="c.key">
+        <div class="page-card mb-12 chart-card">
+          <div class="chart-head">
+            <h4 style="margin:0">{{ c.icon }} {{ c.title }}趋势（按天）</h4>
+            <div class="chart-tools">
+              <span class="chart-sum">{{ c.total }}（{{ window.from }} ~ {{ window.to }}）</span>
+              <el-radio-group v-model="chartTypes[c.key]" size="small">
+                <el-radio-button value="line">折线</el-radio-button>
+                <el-radio-button value="bar">柱状</el-radio-button>
+                <el-radio-button value="area">面积</el-radio-button>
+              </el-radio-group>
+              <el-dropdown @command="(fmt) => exportOne(c, fmt)">
+                <el-button size="small" text type="primary">导出<el-icon style="margin-left:2px"><ArrowDown /></el-icon></el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="csv">CSV 格式</el-dropdown-item>
+                    <el-dropdown-item command="excel">Excel 格式</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </div>
+          <TrendChart :series="c.series" :type="chartTypes[c.key]" height="230px" :color="[c.color]" />
         </div>
-        <!-- 随访状态分布 -->
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="12">
+      <!-- 随访状态分布 -->
+      <el-col :span="14">
         <div class="page-card">
           <h4 style="margin-top:0">📋 随访状态分布</h4>
           <div v-for="s in statusRows" :key="s.key" class="dist-row">
@@ -89,8 +124,10 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onActivated } from 'vue';
 import { ElMessage } from 'element-plus';
+import { ArrowDown } from '@element-plus/icons-vue';
 import { api } from '../api';
 import TrendChart from '../components/TrendChart.vue';
+import { exportCsv, exportExcel } from '../utils/export';
 
 const days = ref(30);
 const risk = ref('');
@@ -110,13 +147,22 @@ const metricCards = computed(() => [
   { label: '复查完成率', ...(metrics.revisitRate || {}) }
 ]);
 
+/* ---------------- 趋势图表：4 个独立分析单元 ---------------- */
 const ts = (date) => new Date(date + 'T00:00:00+08:00').getTime();
-const trendSeries = computed(() => [
-  { name: '建档', data: trend.value.map((d) => [ts(d.date), d.archived]) },
-  { name: '随访执行', data: trend.value.map((d) => [ts(d.date), d.followups]) },
-  { name: '失访', data: trend.value.map((d) => [ts(d.date), d.lost]) },
-  { name: '筛查登记', data: trend.value.map((d) => [ts(d.date), d.screenings]) }
-]);
+
+const chartConfigs = computed(() => ([
+  { key: 'archived', icon: '🗂️', title: '专病建档', field: 'archived', color: '#1668dc', unit: '人' },
+  { key: 'followups', icon: '🩺', title: '随访执行', field: 'followups', color: '#00b42a', unit: '人次' },
+  { key: 'lost', icon: '📉', title: '失访', field: 'lost', color: '#f53f3f', unit: '人' },
+  { key: 'screenings', icon: '🔍', title: '筛查登记', field: 'screenings', color: '#f7ba1e', unit: '例' }
+].map((c) => ({
+  ...c,
+  total: trend.value.reduce((s, d) => s + (Number(d[c.field]) || 0), 0),
+  series: [{ name: c.title, data: trend.value.map((d) => [ts(d.date), d[c.field]]) }]
+}))));
+
+/** 每张图表独立的类型状态（默认折线） */
+const chartTypes = reactive({ archived: 'line', followups: 'line', lost: 'line', screenings: 'line' });
 
 const STATUS_COLORS = { overdue: '#f56c6c', today: '#f56c6c', soon3d: '#e6a23c', scheduled: '#1668dc', none: '#c9cdd4', lost: '#86909c' };
 const statusRows = computed(() => {
@@ -134,6 +180,28 @@ const riskRows = computed(() => {
     { key: 'unknown', label: '未评估', color: '#c9cdd4' }
   ].map((r) => ({ ...r, count: riskDist[r.key] || 0, pct: Math.round(((riskDist[r.key] || 0) / total) * 100) }));
 });
+
+/* ---------------- 导出 ---------------- */
+const fmtDateLabel = (d) => d.date;
+const fmtVal = (v) => (v == null ? 0 : v);
+
+function exportOne(cfg, fmt) {
+  const headers = ['日期', `${cfg.title}（${cfg.unit}）`];
+  const rows = trend.value.map((d) => [fmtDateLabel(d), fmtVal(d[cfg.field])]);
+  const name = `业务趋势_${cfg.title}_${window.from}_${window.to}`;
+  if (fmt === 'excel') exportExcel(name, cfg.title, headers, rows);
+  else exportCsv(name, headers, rows);
+  ElMessage.success(`${cfg.title}趋势数据已导出（${fmt === 'excel' ? 'Excel' : 'CSV'}）`);
+}
+
+function exportAll(fmt) {
+  const headers = ['日期', '专病建档（人）', '随访执行（人次）', '失访（人）', '筛查登记（例）'];
+  const rows = trend.value.map((d) => [fmtDateLabel(d), fmtVal(d.archived), fmtVal(d.followups), fmtVal(d.lost), fmtVal(d.screenings)]);
+  const name = `业务趋势汇总_${window.from}_${window.to}`;
+  if (fmt === 'excel') exportExcel(name, '业务趋势', headers, rows);
+  else exportCsv(name, headers, rows);
+  ElMessage.success(`全部趋势数据已导出（${fmt === 'excel' ? 'Excel' : 'CSV'}）`);
+}
 
 async function load() {
   try {
@@ -160,4 +228,8 @@ onActivated(load);
 .dist-label { width: 64px; font-size: 13px; color: #4e5969; }
 .dist-count { width: 48px; font-size: 12px; color: #86909c; text-align: right; }
 .caliber { margin: 0; padding-left: 18px; color: #4e5969; font-size: 13px; line-height: 2; }
+.chart-card { padding: 14px 16px 8px; }
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.chart-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chart-sum { color: #86909c; font-size: 12px; }
 </style>

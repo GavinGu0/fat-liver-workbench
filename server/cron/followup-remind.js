@@ -1,14 +1,16 @@
 'use strict';
 /**
  * 每日定时任务（Vercel Cron，北京时间 09:00 = UTC 01:00）：
- * 1. 随访提醒：扫描当日应随访患者 → 未提醒则推送消息
- * 2. 数据快照：患者档案 + 近期记录打包备份（Blob 优先，KV 兜底）
- * 3. 过期清理：已过期随访集合清理
+ * 1. 随访提醒：扫描当日应随访患者 → 未提醒则推送消息（带发送日志/状态跟踪/失败重试）
+ * 2. 重试队列：处理到期失败通知的自动重发（超过上限触发管理员告警）
+ * 3. 数据快照：患者档案 + 近期记录打包备份（Blob 优先，KV 兜底）
+ * 4. 过期清理：已过期随访集合清理
  * 安全：配置 CRON_SECRET 后强制校验 Authorization: Bearer
  */
 const { defineHandler } = require('../_lib/handler');
 const { getDb, K, dateStr } = require('../_lib/storage');
 const { getPatient, pushMsg, audit } = require('../_lib/services');
+const { sendReminder, processRetryQueue } = require('../_lib/notify');
 const { raiseAlert } = require('../_lib/clinic');
 const { putJson, blobConfigured } = require('../_lib/blob');
 const { ApiError } = require('../_lib/response');
@@ -27,7 +29,7 @@ module.exports = defineHandler({
 
     const db = await getDb();
     const today = dateStr();
-    const result = { date: today, reminded: 0, preReminded: 0, overdueAlerts: 0, cleaned: 0, backup: null };
+    const result = { date: today, reminded: 0, remindFailed: 0, preReminded: 0, overdueAlerts: 0, cleaned: 0, retry: null, backup: null };
 
     // 0) 3日后随访预提醒：医生端弹窗数据源 + 医患双方站内信
     const in3 = dateStr(3);
@@ -45,12 +47,17 @@ module.exports = defineHandler({
         result.preReminded++;
       }
       if (p.userId) {
-        await pushMsg(p.userId, {
-          type: 'followup_pre_remind',
-          title: '随访即将开始',
-          content: `<p>您预约的随访将于 <b>3天后（${in3}）</b> 进行，请保持规律记录饮食与运动数据。</p>`,
-          from: '管理系统',
-          payload: { patientId: pid, date: in3 }
+        await sendReminder({
+          userId: p.userId, patientId: pid, patientName: p.name, docId: p.docId,
+          bizType: 'followup_pre_remind',
+          channels: ['inapp'],
+          msg: {
+            type: 'followup_pre_remind',
+            title: '随访即将开始',
+            content: `<p>您预约的随访将于 <b>3天后（${in3}）</b> 进行，请保持规律记录饮食与运动数据。</p>`,
+            from: '管理系统',
+            payload: { patientId: pid, date: in3 }
+          }
         });
       }
     }
@@ -73,22 +80,26 @@ module.exports = defineHandler({
       }
     }
 
-    // 1) 随访提醒：今日应随访
+    // 1) 随访提醒：今日应随访（带发送日志跟踪；未绑定账号患者记录 skipped 便于医护排查）
     const dueIds = await db.smembers(K.followupDue(today));
     for (const pid of dueIds || []) {
       const p = await getPatient(pid);
       if (!p) { await db.srem(K.followupDue(today), pid); result.cleaned++; continue; }
       if (p.reminderSentOn === today) continue;
-      if (p.userId) {
-        await pushMsg(p.userId, {
+      const r = await sendReminder({
+        userId: p.userId, patientId: pid, patientName: p.name, docId: p.docId,
+        bizType: 'followup_remind',
+        channels: ['inapp', 'sms'],
+        msg: {
           type: 'followup_remind',
           title: '今日随访提醒',
           content: `<p>医生为您安排了今日随访，请记得记录<b>饮食、运动和随访指标</b>，保持数据连续性。</p>`,
           from: '管理系统',
           payload: { patientId: pid }
-        });
-        result.reminded++;
-      }
+        }
+      });
+      if (r.status === 'sent') result.reminded++;
+      else if (r.status === 'failed' || r.status === 'partial') result.remindFailed++;
       // 档案级防重标记（即使无账号也标记，避免重复扫描）
       await db.set(K.flag(`reminded_${pid}_${today}`), '1', { ex: 2 * DAY });
       // 将防重标记写入档案（轻量直写，避免锁开销）
@@ -100,6 +111,13 @@ module.exports = defineHandler({
           await db.set(K.patient(pid), JSON.stringify(doc));
         }
       } catch { /* 非关键路径 */ }
+    }
+
+    // 1.5) 通知重试队列：到期失败项自动重发（超限自动触发管理员告警）
+    try {
+      result.retry = await processRetryQueue();
+    } catch (e) {
+      logger.warn('cron.notify-retry.fail', { message: e.message });
     }
 
     // 2) 过期随访集合清理（近7天已过期的 due set）

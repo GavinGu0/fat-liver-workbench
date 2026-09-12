@@ -291,8 +291,9 @@ check('registry model score attached', typeof regCreate.data?.riskScore === 'num
 const regLogin = await call('server/auth/login.js', { method: 'POST', body: { mode: 'password', username: 'regpatient01', passwordHash: sha('Abc123456') } });
 check('created account can login', regLogin.code === 0 && regLogin.data.user.role === 'patient', regLogin);
 
-const regDup = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: { ...regBody, name: '重复用户名' } });
-check('duplicate username -> 409', regDup.code === 40901, regDup);
+// 用户名冲突：不同患者（新身份证/手机号）抢占已用用户名 → 409
+const regConflict = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: { ...regBody, name: '测试冲突用户', idCard: '110101198001015137', phone: '13900005555' } });
+check('username taken by another person -> 409', regConflict.code === 40901, regConflict);
 
 const regBadId = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: { ...regBody, username: 'regpatient02', idCard: '110101197504124511' } });
 check('invalid idCard checksum -> 422', regBadId.code === 42200, regBadId);
@@ -314,6 +315,10 @@ const regPatientDetail = await call('server/patients/[id]/index.js', { ...docAut
 check('new patient risk synced high', regPatientDetail.data?.profile?.risk === 'high', regPatientDetail.data?.profile?.risk);
 const regMedrec = await call('server/medical-records.js', { ...docAuth, url: `/api/medical-records?patientId=${regCreate.data.patientId}`, query: { patientId: regCreate.data.patientId } });
 check('new medrec readable v1 with labExamDate', regMedrec.code === 0 && regMedrec.data.record?.version === 1 && regMedrec.data.record?.labExamDate === today, regMedrec.data?.record?.version);
+
+// 同一患者重复提交（同身份证/同用户名）→ 匹配绑定既有档案，复用账号，病历版本+1（幂等防重复建档）
+const regRebind = await call('server/registry/index.js', { ...docAuth, method: 'POST', url: '/api/registry', body: regBody });
+check('same patient resubmit binds existing account', regRebind.code === 0 && regRebind.data.accountExisted === true && regRebind.data.patientId === regCreate.data.patientId && regRebind.data.version === 2, regRebind.data);
 
 console.log('\n[18.6] 专病建档增强：住院号 / 档案完整度 / 随访状态');
 check('one-stop create completeness complete (key items present)', regCreate.data?.completeness?.complete === true, regCreate.data?.completeness);
@@ -423,6 +428,51 @@ const alReadAll = await call('server/alerts/read-all.js', { ...docAuth, method: 
 check('alerts read-all', alReadAll.code === 0, alReadAll);
 const dash3 = await call('server/dashboard.js', { ...docAuth, url: '/api/dashboard' });
 check('alerts cleared after read-all', dash3.data.metrics.alertsOpen === 0 && dash3.data.metrics.alertsUnread === 0, dash3.data?.metrics);
+
+console.log('\n[25] 登录安全：细化错误 / 失败锁定 / 密码重置 / 会话吊销 / 登录日志');
+const LOGIN_URL = '/api/v1/auth/login'; // 与线上路径一致（限流按路由分桶，独立于上方 '/' 桶）
+
+// 1) 密码错误 → 细化提示（剩余尝试次数）
+const wrong1 = await call('server/auth/login.js', { method: 'POST', url: LOGIN_URL, body: { mode: 'password', username: 'regpatient01', passwordHash: sha('WrongPwd000') } });
+check('wrong pwd -> specific retry hint', wrong1.code === 40102 && /还可尝试 4 次/.test(wrong1.message), wrong1);
+// 2) 连续 5 次失败 → 锁定（提示含自助解锁指引）
+for (let i = 0; i < 3; i++) {
+  await call('server/auth/login.js', { method: 'POST', url: LOGIN_URL, body: { mode: 'password', username: 'regpatient01', passwordHash: sha('WrongPwd000') } });
+}
+const lockHit = await call('server/auth/login.js', { method: 'POST', url: LOGIN_URL, body: { mode: 'password', username: 'regpatient01', passwordHash: sha('WrongPwd000') } });
+check('5th failure -> locked with guidance', lockHit.code === 40103 && /锁定/.test(lockHit.message) && /验证码/.test(lockHit.message), lockHit);
+// 3) 锁定期间正确密码也被拦截
+const lockedOk = await call('server/auth/login.js', { method: 'POST', url: LOGIN_URL, body: { mode: 'password', username: 'regpatient01', passwordHash: sha('Abc123456') } });
+check('locked rejects correct pwd', lockedOk.code === 40103, lockedOk);
+// 4) 登录日志：医护可查 + 失败/锁定统计 + 账号脱敏
+const llDoc = await call('server/auth/login-logs.js', { ...docAuth, url: '/api/auth/login-logs' });
+check('login logs staff view + stats', llDoc.code === 0 && llDoc.data.stats.fail >= 4 && llDoc.data.stats.lock >= 1, llDoc.data?.stats);
+check('login logs account masked', llDoc.data.items.some(i => String(i.account).includes('***')), llDoc.data?.items?.slice(0, 3));
+const llNurse = await call('server/auth/login-logs.js', { ...nurseAuth, url: '/api/auth/login-logs' });
+check('nurse can view login logs', llNurse.code === 0, llNurse.code);
+const llPat = await call('server/auth/login-logs.js', { ...patAuth, url: '/api/auth/login-logs' });
+check('patient cannot view login logs -> 403', llPat.code === 40300, llPat.code);
+
+// 5) 密码重置：错误验证码/新旧同密拦截 → 重置成功（解锁 + 自动登录 + 吊销旧会话）
+const smsReset = await call('server/auth/sms.js', { method: 'POST', body: { phone: '13900001111' } });
+const resetBadCode = await call('server/auth/reset-password.js', { method: 'POST', body: { phone: '13900001111', code: '000000', newPasswordHash: sha('NewPwd999') } });
+check('reset wrong code -> 422 (code kept)', resetBadCode.code === 42202, resetBadCode);
+const resetSamePwd = await call('server/auth/reset-password.js', { method: 'POST', body: { phone: '13900001111', code: smsReset.data.demoCode, newPasswordHash: sha('Abc123456') } });
+check('reset same pwd -> 422 (code kept)', resetSamePwd.code === 42203, resetSamePwd);
+const resetOk = await call('server/auth/reset-password.js', { method: 'POST', body: { phone: '13900001111', code: smsReset.data.demoCode, newPasswordHash: sha('NewPwd999') } });
+check('reset ok + auto login', resetOk.code === 0 && resetOk.data.reset === true && resetOk.data.user.role === 'patient' && !!resetOk.data.accessToken, resetOk);
+check('reset revoked prior sessions', resetOk.data.revokedSessions >= 1, resetOk.data?.revokedSessions);
+// 6) 旧密码失效（细化提示）；新密码可登录（同时证明重置已解锁账号）
+const oldPwdLogin = await call('server/auth/login.js', { method: 'POST', url: LOGIN_URL, body: { mode: 'password', username: 'regpatient01', passwordHash: sha('Abc123456') } });
+check('old pwd rejected after reset', oldPwdLogin.code === 40102 && /密码错误/.test(oldPwdLogin.message), oldPwdLogin);
+const newPwdLogin = await call('server/auth/login.js', { method: 'POST', url: LOGIN_URL, body: { mode: 'password', username: 'regpatient01', passwordHash: sha('NewPwd999') } });
+check('new pwd login ok (lock cleared by reset)', newPwdLogin.code === 0 && newPwdLogin.data.user.role === 'patient', newPwdLogin);
+// 7) 重置前签发的 Refresh Token 已被吊销
+const revokedRefresh = await call('server/auth/refresh.js', { method: 'POST', body: { refreshToken: regLogin.data.refreshToken } });
+check('old refresh token revoked after reset', revokedRefresh.code === 40100, revokedRefresh);
+// 8) 登录日志最终态：重置事件已记录
+const llFinal = await call('server/auth/login-logs.js', { ...docAuth, url: '/api/auth/login-logs' });
+check('login logs record reset event', llFinal.code === 0 && llFinal.data.stats.reset >= 1 && llFinal.data.stats.success >= 1, llFinal.data?.stats);
 
 console.log(`\n========== 冒烟测试结果: ${passed} 通过 / ${failed} 失败 ==========`);
 process.exit(failed ? 1 : 0);

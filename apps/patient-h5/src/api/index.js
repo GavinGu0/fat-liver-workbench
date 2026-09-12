@@ -3,6 +3,7 @@ import { http } from './request';
 export const api = {
   login: (data) => http.post('/auth/login', data),
   sendSms: (phone) => http.post('/auth/sms', { phone }),
+  resetPassword: (data) => http.post('/auth/reset-password', data),
   logout: (refreshToken) => http.post('/auth/logout', { refreshToken }),
   messages: () => http.get('/messages'),
   markRead: (mid) => http.post(`/messages/${mid}/read`),

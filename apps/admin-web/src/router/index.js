@@ -25,6 +25,7 @@ const routes = [
       { path: 'alerts', name: 'alerts', component: () => import('../views/Alerts.vue'), meta: { title: '预警提醒', roles: ['doctor'] } },
       { path: 'messages', name: 'messages', component: () => import('../views/Messages.vue'), meta: { title: '消息中心' } },
       { path: 'quality', name: 'quality', component: () => import('../views/Quality.vue'), meta: { title: '质量看板', roles: ['doctor'] } },
+      { path: 'login-logs', name: 'loginLogs', component: () => import('../views/LoginLogs.vue'), meta: { title: '登录日志', roles: ['doctor'] } },
       { path: 'education', name: 'education', component: () => import('../views/nurse/Education.vue'), meta: { title: '宣教推送', roles: ['doctor', 'nurse'] } },
       { path: 'guidance', name: 'guidance', component: () => import('../views/nurse/Guidance.vue'), meta: { title: '个案指导', roles: ['nurse'] } },
       { path: 'templates', name: 'templates', component: () => import('../views/nurse/Templates.vue'), meta: { title: '评估模板', roles: ['nurse'] } }

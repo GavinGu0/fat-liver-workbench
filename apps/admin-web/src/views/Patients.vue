@@ -17,7 +17,9 @@
         <el-option label="7日未填报" value="notFilled7d" />
       </el-select>
       <el-button type="primary" @click="load(1)">查询</el-button>
+      <el-button :icon="Refresh" circle :loading="loading" title="刷新列表" @click="load()" />
       <div style="flex:1"></div>
+      <el-switch v-model="autoRefresh" active-text="30s自动刷新" style="margin-right:10px" @change="onAutoRefreshChange" />
       <el-button v-if="auth.isDoctor" type="warning" :disabled="!selected.length" @click="batchVisible = true">
         批量设置随访（{{ selected.length }}）
       </el-button>
@@ -75,9 +77,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
+import { Refresh } from '@element-plus/icons-vue';
 import { api } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { fmtTime, todayStr } from '../utils/format';
@@ -97,6 +100,23 @@ const batchVisible = ref(false);
 const batchDate = ref('');
 const batchNote = ref('');
 const batchLoading = ref(false);
+
+/* 实时数据更新：30s 轮询（幂等启停；keep-alive 离开即停，回到页面自动恢复） */
+const autoRefresh = ref(true);
+let pollTimer = null;
+
+function startPolling() {
+  stopPolling();
+  if (!autoRefresh.value) return;
+  pollTimer = setInterval(() => { load(); }, 30000);
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+function onAutoRefreshChange(on) {
+  if (on) startPolling();
+  else stopPolling();
+}
 
 async function load(page) {
   loading.value = true;
@@ -127,7 +147,10 @@ async function doBatch() {
   }
 }
 
-onMounted(load);
+onMounted(() => { load(); startPolling(); });
+onActivated(() => { load(); startPolling(); });
+onDeactivated(stopPolling);
+onBeforeUnmount(stopPolling);
 </script>
 
 <style scoped>

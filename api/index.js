@@ -22,6 +22,8 @@ const ROUTES = [
   ['auth/sms', require('../server/auth/sms.js')],
   ['auth/refresh', require('../server/auth/refresh.js')],
   ['auth/logout', require('../server/auth/logout.js')],
+  ['auth/reset-password', require('../server/auth/reset-password.js')],
+  ['auth/login-logs', require('../server/auth/login-logs.js')],
   ['patients/followup-batch', require('../server/patients/followup-batch.js')],
   ['patients', require('../server/patients/index.js')],
   ['patients/[id]', require('../server/patients/[id]/index.js')],

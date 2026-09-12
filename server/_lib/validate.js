@@ -153,6 +153,13 @@ const smsSchema = z.object({
   phone: z.string().regex(/^1\d{10}$/, '手机号格式不正确')
 });
 
+/** 密码重置：手机号 + 短信验证码 + 新密码（前端 sha256 后传输，服务端 bcrypt 落库） */
+const resetPasswordSchema = z.object({
+  phone: z.string().regex(/^1\d{10}$/, '手机号格式不正确'),
+  code: z.string().min(4, '验证码格式不正确').max(6),
+  newPasswordHash: z.string().min(32, '新密码不合法').max(128)
+});
+
 /* ==================== 医生端扩展：专病建档 / 筛查 / 预警 / 随访 / 质控 ==================== */
 /** 身份证：空值放行；填写时 15/18 位格式 + 18 位出生日期与 GB11643 校验码实校验 */
 const idCardField = z.string().trim().transform(v => v.toUpperCase())
@@ -285,6 +292,26 @@ const followupRemindSchema = z.object({
   patientIds: z.array(z.string()).min(1, '请选择患者').max(50)
 });
 
+/* ==================== 宣教模板管理（自定义素材 CRUD / 版本 / 启停） ==================== */
+const MATERIAL_CATEGORIES = ['饮食宣教', '运动指导', '戒酒限酒', '用药安全', '复查随访', '心理调适', '其他'];
+
+const materialCreateSchema = z.object({
+  title: z.string().trim().min(2, '模板标题至少2个字').max(50, '模板标题最多50字'),
+  summary: z.string().trim().max(100, '摘要最多100字').optional().default(''),
+  html: z.string().min(5, '模板内容至少5个字符').max(30000, '模板内容过大'),
+  category: z.string().trim().max(20).optional().default('其他'),
+  tags: z.array(z.string().trim().min(1).max(12, '单个标签最多12字')).max(6, '最多6个标签').optional().default([])
+});
+
+const materialUpdateSchema = materialCreateSchema.extend({
+  id: z.string().min(3).max(64),
+  action: z.literal('toggle').optional()   // toggle = 启用/禁用切换
+});
+
+const materialDeleteSchema = z.object({
+  id: z.string().min(3).max(64)
+});
+
 /** 执行校验，失败抛 422（医学校验不通过） */
 function parse(schema, data) {
   const r = schema.safeParse(data || {});
@@ -311,6 +338,7 @@ module.exports = {
   uploadSchema,
   loginSchema,
   smsSchema,
+  resetPasswordSchema,
   /* 医生端扩展 */
   medicalRecordSchema,
   registryCreateSchema,
@@ -320,5 +348,10 @@ module.exports = {
   alertHandleSchema,
   followupExecuteSchema,
   followupLostSchema,
-  followupRemindSchema
+  followupRemindSchema,
+  /* 宣教模板管理 */
+  MATERIAL_CATEGORIES,
+  materialCreateSchema,
+  materialUpdateSchema,
+  materialDeleteSchema
 };

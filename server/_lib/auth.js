@@ -74,11 +74,13 @@ function requireRole(user, roleKey) {
   }
 }
 
-/* ---------------- Refresh Token（存 KV 可吊销 + 轮换） ---------------- */
+/* ---------------- Refresh Token（存 KV 可吊销 + 轮换 + 按用户索引批量吊销） ---------------- */
 async function issueRefresh(user) {
   const db = await getDb();
+  const uid = user.uid || user.id;
   const token = randomBytes(32).toString('hex');
-  await db.set(K.refresh(token), JSON.stringify({ uid: user.id, role: user.role }), { ex: REFRESH_TTL_SEC });
+  await db.set(K.refresh(token), JSON.stringify({ uid, role: user.role }), { ex: REFRESH_TTL_SEC });
+  try { await db.sadd(K.refreshIdxUid(uid), token); } catch { /* 索引失败不阻塞登录 */ }
   return token;
 }
 
@@ -90,13 +92,36 @@ async function rotateRefresh(oldToken) {
   const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
   const token = randomBytes(32).toString('hex');
   await db.set(K.refresh(token), JSON.stringify(info), { ex: REFRESH_TTL_SEC });
+  try {
+    await db.srem(K.refreshIdxUid(info.uid), oldToken);
+    await db.sadd(K.refreshIdxUid(info.uid), token);
+  } catch { /* 索引维护失败不阻塞刷新 */ }
   return { info, token };
 }
 
 async function revokeRefresh(token) {
   if (!token) return;
   const db = await getDb();
+  try {
+    const raw = await db.get(K.refresh(token));
+    if (raw) {
+      const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (info && info.uid) await db.srem(K.refreshIdxUid(info.uid), token);
+    }
+  } catch { /* fallthrough */ }
   await db.del(K.refresh(token));
+}
+
+/** 批量吊销用户全部会话（密码重置后调用）：所有 Refresh Token 立即失效，Access Token 15 分钟内自然过期 */
+async function revokeUserSessions(uid) {
+  if (!uid) return 0;
+  const db = await getDb();
+  const tokens = await db.smembers(K.refreshIdxUid(uid));
+  for (const t of tokens) {
+    try { await db.del(K.refresh(t)); } catch { /* 继续吊销其余 */ }
+  }
+  await db.del(K.refreshIdxUid(uid));
+  return tokens.length;
 }
 
 module.exports = {
@@ -113,5 +138,6 @@ module.exports = {
   requireRole,
   issueRefresh,
   rotateRefresh,
-  revokeRefresh
+  revokeRefresh,
+  revokeUserSessions
 };

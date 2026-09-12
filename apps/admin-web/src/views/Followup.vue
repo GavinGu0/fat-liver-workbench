@@ -14,6 +14,8 @@
       <el-input v-model="q.keyword" placeholder="搜索姓名/手机号" style="width:200px" clearable @keyup.enter="load" @clear="load">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
+      <div style="flex:1"></div>
+      <el-button type="info" plain @click="openLog">📨 提醒发送日志</el-button>
     </div>
 
     <el-table :data="rows" v-loading="loading" @row-click="(r) => $router.push(`/patients/${r.patientId}`)" style="cursor:pointer">
@@ -106,6 +108,48 @@
         <el-button type="primary" :loading="saving" @click="saveReschedule">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 提醒发送日志 -->
+    <el-dialog v-model="logVisible" title="📨 提醒发送日志" width="760px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <el-date-picker v-model="logDate" type="date" value-format="YYYY-MM-DD" :clearable="false" style="width:150px" @change="loadLog" />
+        <el-select v-model="logStatus" style="width:130px" @change="loadLog">
+          <el-option label="全部状态" value="" />
+          <el-option label="已送达" value="sent" />
+          <el-option label="发送失败" value="failed" />
+          <el-option label="部分成功" value="partial" />
+          <el-option label="已跳过" value="skipped" />
+        </el-select>
+        <div style="flex:1"></div>
+        <span v-if="logStats" style="color:#86909c;font-size:12px">
+          送达 {{ logStats.sent }} · 失败 {{ logStats.failed }} · 跳过 {{ logStats.skipped }} · 待重试 {{ logStats.pending }}
+        </span>
+      </div>
+      <el-table :data="logRows" v-loading="logLoading" max-height="380" size="small">
+        <el-table-column label="时间" width="140">
+          <template #default="{ row }">{{ fmtTime(row.ts) }}</template>
+        </el-table-column>
+        <el-table-column label="患者" width="90">
+          <template #default="{ row }">{{ row.patientName || row.patientId || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="业务" width="120">
+          <template #default="{ row }">{{ logBizLabel(row.bizType) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="logTagType(row.status)">{{ logStatusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="90" align="center">
+          <template #default="{ row }">
+            <el-button v-if="row.status === 'failed' || row.status === 'partial'" size="small" type="primary" text @click="resend(row)">重发</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <p style="color:#86909c;font-size:12px;margin:8px 0 0">
+        失败提醒将按 30秒/5分钟/30分钟 间隔自动重试（最多3次），超限自动向主管医生推送告警。短信通道需配置 SMS_KEY，未配置时仅站内信送达。
+      </p>
+    </el-dialog>
   </div>
 </template>
 
@@ -113,7 +157,7 @@
 import { ref, reactive, onMounted, onActivated } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api';
-import { fmtTime } from '../utils/format';
+import { fmtTime, todayStr } from '../utils/format';
 import RiskTag from '../components/RiskTag.vue';
 
 const q = reactive({ status: '', keyword: '' });
@@ -130,6 +174,43 @@ const records = ref([]);
 const reschedVisible = ref(false);
 const reschedDate = ref('');
 const reschedNote = ref('');
+
+/* 提醒发送日志 */
+const logVisible = ref(false);
+const logLoading = ref(false);
+const logRows = ref([]);
+const logStats = ref(null);
+const logDate = ref(todayStr());
+const logStatus = ref('');
+const logBizLabels = {
+  followup_remind: '每日随访提醒',
+  followup_pre_remind: '3日预提醒',
+  followup_remind_manual: '医生手动提醒',
+  education_push: '宣教推送'
+};
+const logStatusLabel = (s) => ({ sent: '已送达', failed: '失败', partial: '部分成功', skipped: '已跳过', pending: '发送中', retrying: '重试中' }[s] || s);
+const logTagType = (s) => ({ sent: 'success', failed: 'danger', partial: 'warning', skipped: 'info', pending: 'info', retrying: 'warning' }[s] || 'info');
+const logBizLabel = (b) => logBizLabels[b] || (b || '').replace(/_resend$/, '（重发）');
+
+function openLog() {
+  logVisible.value = true;
+  loadLog();
+}
+async function loadLog() {
+  logLoading.value = true;
+  try {
+    const d = await api.remindLog({ date: logDate.value, status: logStatus.value || undefined });
+    logRows.value = d.items;
+    logStats.value = d.stats;
+  } catch (e) { ElMessage.error(e.message); } finally { logLoading.value = false; }
+}
+async function resend(row) {
+  try {
+    await api.remindResend(row.id);
+    ElMessage.success('已重新发送');
+    loadLog();
+  } catch (e) { ElMessage.error(e.message); }
+}
 
 const tagType = (s) => ({ overdue: 'danger', today: 'danger', soon3d: 'warning', scheduled: 'primary', none: 'info', lost: 'info' }[s] || 'info');
 const maskPhone = (s) => (s ? String(s).replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '-');

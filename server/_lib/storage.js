@@ -37,6 +37,7 @@ const K = {
   idem: (k) => `idem:${k}`,
   lock: (k) => `lock:${k}`,
   refresh: (t) => `refresh:${t}`,
+  refreshIdxUid: (uid) => `refresh:index:uid:${uid}`,
   track: (date) => `track:${date}`,
   audit: (month) => `audit:${month}`,
   config: (key) => `config:${key}`,
@@ -51,7 +52,19 @@ const K = {
   alert: (id) => `alert:${id}`,
   alertIdx: (uid) => `alert:index:uid:${uid}`,
   alertUnread: (uid) => `alert:unread:uid:${uid}`,
-  followupRec: (pid) => `followup:rec:${pid}`
+  followupRec: (pid) => `followup:rec:${pid}`,
+  /* 通知发送日志（随访提醒等多渠道消息跟踪）：按日列表 + 单条明细 + 重试队列 */
+  notifyLog: (date) => `notify:log:${date}`,
+  notifyItem: (id) => `notify:item:${id}`,
+  notifyRetry: 'notify:retry:queue',
+  /* 登录安全：日志（按日）+ 失败计数 + 锁定标记 */
+  loginLog: (date) => `login:log:${date}`,
+  loginFail: (key) => `login:fail:${key}`,
+  loginLock: (key) => `login:lock:${key}`,
+  loginIpUser: (ip) => `login:ip-user:${ip}`,
+  /* 患者唯一标识索引（身份证/手机号 → patientId，建档与注册双向匹配） */
+  patientIdxIdCard: (id) => `patient:index:idcard:${String(id).toUpperCase()}`,
+  patientIdxPhone: (p) => `patient:index:phone:${p}`
 };
 
 /** 以上海时区计算 yyyy-MM-dd（服务运行于 UTC，业务日期必须按本地时区取） */

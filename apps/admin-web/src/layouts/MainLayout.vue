@@ -31,6 +31,9 @@
           <el-menu-item index="/quality">
             <el-icon><DataAnalysis /></el-icon><span>质量看板</span>
           </el-menu-item>
+          <el-menu-item index="/login-logs">
+            <el-icon><Lock /></el-icon><span>登录日志</span>
+          </el-menu-item>
         </template>
         <el-menu-item v-if="auth.isDoctor || auth.isNurse" index="/education">
           <el-icon><Reading /></el-icon><span>宣教推送</span>
