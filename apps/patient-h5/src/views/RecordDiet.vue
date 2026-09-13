@@ -49,6 +49,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../api';
 import { compressImage, todayStr } from '../utils';
 import { MEALS } from '@flwb/shared';
+import toast from '../utils/toast';
 
 const router = useRouter();
 const meals = MEALS;
@@ -73,7 +74,7 @@ async function onFile(e) {
     const d = await api.upload({ filename: 'diet.jpg', dataUrl });
     photoUrl.value = d.url;
   } catch (err) {
-    alert(err.message || '上传失败');
+    toast.error(err.message || '上传失败');
   } finally {
     uploading.value = false;
   }
@@ -81,7 +82,7 @@ async function onFile(e) {
 
 async function save() {
   const foods = form.foods.filter((f) => f.name && f.grams > 0);
-  if (!foods.length) { alert('请至少填写一种食物（名称和估算量）'); return; }
+  if (!foods.length) { toast.warning('请至少填写一种食物（名称和估算量）'); return; }
   saving.value = true;
   try {
     await api.submitDiet({
@@ -92,10 +93,10 @@ async function save() {
       photoUrl: photoUrl.value || undefined,
       note: form.note || undefined
     });
-    alert('✅ 记录成功');
+    toast.success('饮食记录已保存');
     router.replace('/');
   } catch (e) {
-    alert(e.message || '提交失败');
+    toast.error(e.message || '提交失败');
   } finally {
     saving.value = false;
   }

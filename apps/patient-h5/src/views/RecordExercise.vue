@@ -34,6 +34,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../api';
 import { todayStr } from '../utils';
 import { EXERCISE_TYPES, INTENSITIES } from '@flwb/shared';
+import toast from '../utils/toast';
 
 const router = useRouter();
 const types = EXERCISE_TYPES;
@@ -42,7 +43,7 @@ const form = reactive({ type: EXERCISE_TYPES[0], minutes: 30, intensity: 'mid', 
 const saving = ref(false);
 
 async function save() {
-  if (!form.minutes || form.minutes < 1 || form.minutes > 600) { alert('运动时长需在 1-600 分钟'); return; }
+  if (!form.minutes || form.minutes < 1 || form.minutes > 600) { toast.warning('运动时长需在 1-600 分钟'); return; }
   saving.value = true;
   try {
     await api.submitExercise({
@@ -52,10 +53,10 @@ async function save() {
       recordDate: todayStr(),
       note: form.note || undefined
     });
-    alert('✅ 记录成功');
+    toast.success('运动记录已保存');
     router.replace('/');
   } catch (e) {
-    alert(e.message || '提交失败');
+    toast.error(e.message || '提交失败');
   } finally {
     saving.value = false;
   }

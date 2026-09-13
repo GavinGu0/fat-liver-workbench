@@ -43,6 +43,17 @@ module.exports = defineHandler({
     };
 
     await db.zadd(K.vitals(user.patientId), record.ts, JSON.stringify(record));
+
+    /* 写入后读回验证：立即从 ZSet 读回最新一条，确认 ts 一致 —— 确保数据真正落盘 */
+    const verify = await db.zrevrange(K.vitals(user.patientId), 0, 0);
+    if (verify.length) {
+      const latest = JSON.parse(typeof verify[0] === 'string' ? verify[0] : verify[0]);
+      if (latest.ts !== record.ts) {
+        console.error('[storage.verify] vitals write verify FAIL ts mismatch:', { expect: record.ts, got: latest.ts });
+        throw new ApiError(500, 50010, '数据写入确认失败，请稍后重试');
+      }
+    }
+
     await updatePatient(user.patientId, (doc) => {
       if (record.weight != null) { doc.weight = record.weight; doc.lastWeight = record.weight; }
       if (record.bmi != null) doc.bmi = record.bmi;

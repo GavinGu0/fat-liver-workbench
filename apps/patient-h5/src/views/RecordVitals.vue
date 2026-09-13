@@ -42,6 +42,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../api';
 import { todayStr } from '../utils';
 import { MED_RANGES } from '@flwb/shared';
+import toast from '../utils/toast';
 
 const router = useRouter();
 const range = (k) => MED_RANGES[k];
@@ -62,9 +63,9 @@ function clientCheck() {
 
 async function save() {
   const err = clientCheck();
-  if (err) { alert(err); return; }
+  if (err) { toast.error(err); return; }
   const hasAny = [form.weight, form.waist, form.sbp, form.dbp, form.glucose].some((v) => v !== '' && v != null);
-  if (!hasAny) { alert('请至少填写一项指标'); return; }
+  if (!hasAny) { toast.warning('请至少填写一项指标'); return; }
   saving.value = true;
   try {
     const d = await api.submitVitals({
@@ -76,13 +77,13 @@ async function save() {
       glucose: form.glucose === '' ? undefined : Number(form.glucose)
     });
     if (d.warnings && d.warnings.length) {
-      alert('⚠️ 已记录，但注意：' + d.warnings.join('；'));
+      toast.warning('已记录，但注意：' + d.warnings.join('；'));
     } else {
-      alert('✅ 指标已提交，医生端实时可见');
+      toast.success('指标已提交，医生端实时可见');
     }
     router.replace('/');
   } catch (e) {
-    alert(e.message || '提交失败');
+    toast.error(e.message || '提交失败');
   } finally {
     saving.value = false;
   }
