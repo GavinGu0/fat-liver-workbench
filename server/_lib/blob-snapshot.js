@@ -30,7 +30,11 @@ function minIntervalMs() {
 }
 
 function enabled() {
-  return process.env.STORAGE_BLOB_SNAPSHOT === 'true' && !!process.env.BLOB_READ_WRITE_TOKEN;
+  if (process.env.STORAGE_BLOB_SNAPSHOT === 'false') return false; // 显式关闭优先
+  if (!process.env.BLOB_READ_WRITE_TOKEN) return false;            // 未配置 Blob store
+  // Vercel 运行时（自动注入 VERCEL=1）默认启用，防止本地开发误传快照污染云端恢复点；
+  // 本地需显式 STORAGE_BLOB_SNAPSHOT=true 才启用（用于联调）
+  return process.env.VERCEL === '1' || process.env.STORAGE_BLOB_SNAPSHOT === 'true';
 }
 
 async function putSnapshot(body) {
