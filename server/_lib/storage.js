@@ -388,11 +388,46 @@ function withL3Hook(store) {
       const orig = t[prop];
       return async (...args) => {
         const r = await orig.apply(t, args);
+        _lastLocalWriteTs = Date.now(); // 记录最新本地写事件，供温实例远端同步比较
         try { blobSnapshot.scheduleUpload(t); } catch { /* 快照失败不影响业务 */ }
         return r;
       };
     }
   });
+}
+
+/* ---------------- 温实例远端同步：让长期存活的实例从 Blob 收敛其他实例的写入 ---------------- */
+const REMOTE_SYNC_INTERVAL_MS = 60000;
+let _lastRemoteSyncAt = 0;
+let _syncingRemote = false;
+let _lastLocalWriteTs = Date.now();
+
+/**
+ * 温实例远端同步（由请求路径低频触发，内部 60s 节流，不阻塞不抛错）：
+ * 远端快照比本地最新写事件新时，全量 restore 收敛其他实例的写入。
+ * 安全性：仅当远端更新时间晚于本实例最新本地写事件才覆盖——本实例的写入会在
+ * 8s/1.5s 内上传至远端，故此时远端必然已包含本实例数据，restore 不会丢写。
+ */
+async function maybeSyncRemote() {
+  if (!blobSnapshot.enabled()) return;
+  const nowMs = Date.now();
+  if (_syncingRemote || nowMs - _lastRemoteSyncAt < REMOTE_SYNC_INTERVAL_MS) return;
+  _lastRemoteSyncAt = nowMs; // 节流窗口内只尝试一次
+  _syncingRemote = true;
+  try {
+    const payload = await blobSnapshot.download();
+    if (!payload || !payload.data) return;
+    const remoteTs = Date.parse(payload.updatedAt || '') || 0;
+    if (remoteTs <= _lastLocalWriteTs) return; // 本地不旧于远端，无需覆盖
+    const db = await getDb();
+    await db.restore(payload.data);
+    _lastLocalWriteTs = remoteTs;
+    console.info('[storage] warm instance synced from Blob snapshot (updatedAt:', payload.updatedAt + ')');
+  } catch (e) {
+    console.warn('[storage] remote sync failed:', (e && e.message) || e);
+  } finally {
+    _syncingRemote = false;
+  }
 }
 
 async function init() {
@@ -431,6 +466,8 @@ async function init() {
         const payload = await blobSnapshot.download();
         if (payload) {
           const n = store.restore(payload.data);
+          // 冷启动引导后以远端时间为本地基准，温实例同步据此判断是否需要再次收敛
+          _lastLocalWriteTs = Date.parse(payload.updatedAt || '') || _lastLocalWriteTs;
           console.info('[storage] restored', n, 'rows from Blob snapshot (updatedAt:', payload.updatedAt + ')');
         } else {
           console.info('[storage] no remote Blob snapshot, starting fresh');
@@ -518,4 +555,4 @@ function resetForTest() {
   try { fs.unlinkSync(SNAPSHOT_PATH); } catch { /* ignore */ }
 }
 
-module.exports = { getDb, mode, K, dateStr, setNxEx, withLock, memoryStore, resetForTest };
+module.exports = { getDb, mode, K, dateStr, setNxEx, withLock, memoryStore, maybeSyncRemote, resetForTest };

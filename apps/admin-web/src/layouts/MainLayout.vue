@@ -74,8 +74,8 @@
       <el-main class="main">
         <el-alert
           v-if="demoMode" type="info" :closable="false" style="margin-bottom:12px"
-          title="临时存储模式"
-          description="本地/自托管运行时数据落盘 SQLite 文件（data/flwb.db）持久保存；Vercel 部署下受平台只读文件系统限制，数据仅存于实例内存/临时目录，实例回收后重置为演示种子数据（平台物理限制，非缺陷）。"
+          title="轻量存储模式（无外部数据库）"
+          description="本地/自托管运行时数据落盘 SQLite 文件（data/flwb.db）持久保存；Vercel 部署下采用内存存储 + 实例级 /tmp 快照 + Vercel Blob 云端快照，实例间通过快照最终一致（约 1 分钟内收敛），实例回收后可从云端快照恢复。"
           show-icon
         />
         <router-view />

@@ -149,6 +149,8 @@ module.exports = defineHandler({
       }
       await db.del(codeKey);
       const { user, patient } = await registerPatient(db, input);
+      // 注册是关键写事件：强制上传快照，让其他实例尽快看到新患者
+      try { require('../_lib/blob-snapshot').scheduleUpload(db, { force: true }); } catch { /* ignore */ }
       return finalize(user, { ...meta, account: input.phone, mode: 'register' });
     }
 

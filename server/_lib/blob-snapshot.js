@@ -17,6 +17,7 @@
  */
 const SNAPSHOT_KEY = 'storage/snapshot.json';
 const DEBOUNCE_MS = 8000;
+const FORCE_DEBOUNCE_MS = 1500;
 
 let _timer = null;
 let _uploading = false;
@@ -67,19 +68,28 @@ async function uploadNow(db) {
   }
 }
 
-/** 防抖 + 节流调度（由 storage.js 的 L3 写钩子触发） */
-function scheduleUpload(db) {
-  if (!enabled() || _timer || _uploading) return;
+/** 防抖 + 节流调度（由 storage.js 的 L3 写钩子触发）
+ *  opts.force=true：绕过最小间隔节流（用于注册/播种/清理等关键写事件，尽快让其他实例收敛）；
+ *  force 仍保留短防抖（1.5s）合并突发写，避免同一请求内的多次写触发多次上传 */
+function scheduleUpload(db, opts = {}) {
+  if (!enabled() || _uploading) return;
+  const force = !!opts.force;
+  if (_timer) {
+    if (!force) return; // 已有挂起调度，无需重复
+    clearTimeout(_timer); _timer = null; // force：重置为更快的上传
+  }
   _timer = setTimeout(async () => {
     _timer = null;
-    const wait = _lastOkTs + minIntervalMs() - Date.now();
-    if (wait > 0) {
-      _timer = setTimeout(async () => { _timer = null; await uploadNow(db); }, wait);
-      if (_timer.unref) _timer.unref();
-      return;
+    if (!force) {
+      const wait = _lastOkTs + minIntervalMs() - Date.now();
+      if (wait > 0) {
+        _timer = setTimeout(async () => { _timer = null; await uploadNow(db); }, wait);
+        if (_timer.unref) _timer.unref();
+        return;
+      }
     }
     await uploadNow(db);
-  }, DEBOUNCE_MS);
+  }, force ? FORCE_DEBOUNCE_MS : DEBOUNCE_MS);
   if (_timer.unref) _timer.unref();
 }
 

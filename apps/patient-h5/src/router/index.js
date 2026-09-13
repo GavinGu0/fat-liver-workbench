@@ -9,6 +9,7 @@ const routes = [
   { path: '/vitals', name: 'vitals', component: () => import('../views/RecordVitals.vue') },
   { path: '/messages', name: 'messages', component: () => import('../views/Messages.vue') },
   { path: '/timeline', name: 'timeline', component: () => import('../views/Timeline.vue') },
+  { path: '/profile', name: 'profile', component: () => import('../views/Profile.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/' }
 ];
 

@@ -56,6 +56,8 @@ body {
 .btn:disabled { opacity: .5; }
 .btn:active { background: var(--brand-dark); }
 .btn.plain { background: #fff; color: var(--brand); border: 1px solid var(--brand); }
+.btn.danger { background: #ef4444; }
+.btn.danger:active { background: #dc2626; }
 
 /* 列表 */
 .list-item {

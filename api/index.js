@@ -19,6 +19,7 @@ const ROUTES = [
   ['config', require('../server/config.js')],
   ['dashboard', require('../server/dashboard.js')],
   ['auth/login', require('../server/auth/login.js')],
+  ['auth/me', require('../server/auth/me.js')],
   ['auth/sms', require('../server/auth/sms.js')],
   ['auth/refresh', require('../server/auth/refresh.js')],
   ['auth/logout', require('../server/auth/logout.js')],

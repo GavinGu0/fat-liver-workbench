@@ -382,7 +382,12 @@ module.exports = defineHandler({
   limit: { scope: 'write', max: 30, windowSec: 60, byUser: true },
   fn: async (ctx) => {
     if (ctx.req.method === 'GET') return listArchives(ctx);
-    if (ctx.req.method === 'POST') return createRegistry(ctx);
+    if (ctx.req.method === 'POST') {
+      const result = await createRegistry(ctx);
+      // 建档是关键写事件：强制上传快照，让其他实例尽快看到新患者
+      try { require('../_lib/blob-snapshot').scheduleUpload(await getDb(), { force: true }); } catch { /* ignore */ }
+      return result;
+    }
     throw new ApiError(405, 40500, '不支持的请求方法');
   }
 });

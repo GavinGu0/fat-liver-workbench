@@ -7,7 +7,7 @@ const { makeReqId, ok, fail, ApiError } = require('./response');
 const logger = require('./logger');
 const { authFromReq, requireRole } = require('./auth');
 const { rateLimit } = require('./rate-limit');
-const { setNxEx, K } = require('./storage');
+const { setNxEx, K, maybeSyncRemote } = require('./storage');
 const { ensureSeed } = require('./seed');
 
 const BODY_LIMIT = 6 * 1024 * 1024; // 6MB
@@ -61,6 +61,8 @@ function defineHandler(opts) {
     let user = null;
     try {
       await ensureSeed();
+      // 温实例远端同步：低频（60s 节流）从 Blob 收敛其他实例写入，fire-and-forget 不阻塞请求
+      maybeSyncRemote().catch(() => {});
 
       const body = await readBody(req);
       const query = parseQuery(req);

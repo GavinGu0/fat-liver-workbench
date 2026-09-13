@@ -61,7 +61,7 @@ const dstr = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/
 const today = dstr(0);
 
 /* 每次运行重置存储（本地 SQLite 文件 / 内存快照），保证测试确定性、可重复 */
-const { resetForTest, getDb } = require(join(ROOT, 'server/_lib/storage.js'));
+const { resetForTest, getDb, K } = require(join(ROOT, 'server/_lib/storage.js'));
 resetForTest();
 
 console.log('\n[1] 健康检查与种子数据');
@@ -77,22 +77,67 @@ check('doctor login', docLogin.code === 0 && docLogin.data.user.role === 'doctor
 const docToken = docLogin.data?.accessToken;
 const docAuth = { token: docToken };
 
+console.log('\n[2.5] 准备动态测试患者（单示例患者架构：注册建档 + 无账号档案）');
+
+/* 无账号患者：模拟"医生建档案但未开通登录账号"的数据形态（随访提醒 skipped / 专病建档 / 预警用例） */
+const NOACC_PID = 'p_test_noacc';
+{
+  const d = await getDb();
+  await d.set(K.patient(NOACC_PID), JSON.stringify({
+    id: NOACC_PID, userId: null, name: '赵无账号', gender: 'male', age: 50,
+    height: 172, weight: 80, bmi: 27.0, risk: 'low', phone: '13700009999',
+    docId: 'u_doc_gbmz', nurseId: null, mainDiagnosis: '脂肪肝（待评估）',
+    chiefComplaint: '测试数据：无账号患者', pastHistory: '',
+    nextFollowupDate: null, lastFollowupAt: null,
+    createdAt: Date.now(), lastActivityAt: Date.now(), lastWeight: 80, version: 1
+  }));
+  await d.zadd(K.docPatients('u_doc_gbmz'), Date.now(), NOACC_PID);
+  await d.zadd(K.allPatients, Date.now(), NOACC_PID);
+}
+
+/** 患者自注册创建测试患者（有档案、无专病病历）；url 用独立路径，避免挤占 login 限流的 '/' 桶 */
+async function registerTestPatient(phone, name, gender, age, height, weight) {
+  const s = await call('server/auth/sms.js', { method: 'POST', url: '/api/v1/auth/sms-batch', body: { phone } });
+  const r = await call('server/auth/login.js', {
+    method: 'POST', url: '/api/v1/auth/register-batch',
+    body: { mode: 'register', phone, code: s.data.demoCode, passwordHash: sha('Test123456'), profile: { name, gender, age, height, weight } }
+  });
+  if (r.code !== 0) throw new Error(`register ${name} failed: ${r.message}`);
+  return { id: r.data.user.patientId, token: r.data.accessToken };
+}
+const T1 = await registerTestPatient('13700000001', '钱建国', 'male', 55, 170, 85);   // 随访乐观锁 / MDT / 失访
+const T2 = await registerTestPatient('13700000002', '孙卫东', 'male', 48, 172, 78);   // 筛查 accept / 随访执行
+const T3 = await registerTestPatient('13700000003', '李秀英', 'female', 60, 158, 62); // 未建档 / 逾期 / 护士越权
+const T5 = await registerTestPatient('13700000005', '吴健康', 'male', 45, 168, 82);   // 异常体征 / 筛查 reject
+
+/* T5 提交异常体征（驱动患者列表"数据异常"筛选：sbp>=140） */
+const t5Vitals = await call('server/records/vitals.js', { token: T5.token, method: 'POST', body: { recordDate: today, weight: 82, sbp: 152, dbp: 96, glucose: 6.8 } });
+check('T5 abnormal vitals submitted', t5Vitals.code === 0, t5Vitals);
+
+/* T2/T5 异常检验 → 检验钩子自动生成筛查案例 + 预警（筛查决策 / 预警处理用例的数据来源） */
+const labT2 = await call('server/patients/[id]/labs.js', { ...docAuth, method: 'POST', url: `/api/patients/${T2.id}/labs`, query: { id: T2.id }, body: { examDate: today, alt: 95, tg: 2.8 } });
+const SC_T2 = labT2.data?.screening?.caseId;
+check('T2 lab screening case created', labT2.code === 0 && !!SC_T2 && labT2.data.screening.created === true, labT2.data?.screening);
+const labT5 = await call('server/patients/[id]/labs.js', { ...docAuth, method: 'POST', url: `/api/patients/${T5.id}/labs`, query: { id: T5.id }, body: { examDate: today, alt: 150, fpg: 9.2 } });
+const SC_T5 = labT5.data?.screening?.caseId;
+check('T5 lab screening case created', labT5.code === 0 && !!SC_T5 && labT5.data.screening.created === true, labT5.data?.screening);
+
 console.log('\n[3] 工作台聚合');
 const dash = await call('server/dashboard.js', { ...docAuth, url: '/api/dashboard' });
-check('dashboard metrics', dash.code === 0 && dash.data.metrics.totalPatients >= 9, dash.data?.metrics);
+check('dashboard metrics', dash.code === 0 && dash.data.metrics.totalPatients >= 6, dash.data?.metrics);
 check('dashboard todayFollowups has demo patient', dash.data.todos.todayFollowups.some(p => p.id === 'p_1009'), dash.data?.todos?.todayFollowups);
 
 console.log('\n[4] 患者列表与筛选');
 const list = await call('server/patients/index.js', { ...docAuth, url: '/api/patients?size=50', query: { size: '50' } });
-check('patient list', list.code === 0 && list.data.items.length >= 9, list.data?.total);
+check('patient list', list.code === 0 && list.data.items.length >= 6, list.data?.total);
 const highRisk = await call('server/patients/index.js', { ...docAuth, url: '/api/patients?filter=highRisk', query: { filter: 'highRisk' } });
 check('highRisk filter', highRisk.code === 0 && highRisk.data.items.every(p => p.risk === 'high'), highRisk.data?.items?.length);
 const abnormal = await call('server/patients/index.js', { ...docAuth, url: '/api/patients?filter=abnormal', query: { filter: 'abnormal' } });
-check('abnormal filter catches p_1008', abnormal.code === 0 && abnormal.data.items.some(p => p.id === 'p_1008'), abnormal.data?.items?.map(i => i.id));
+check('abnormal filter catches T5', abnormal.code === 0 && abnormal.data.items.some(p => p.id === T5.id), abnormal.data?.items?.map(i => i.id));
 
 console.log('\n[5] 患者详情/时间轴/趋势');
-const detail = await call('server/patients/[id]/index.js', { ...docAuth, url: '/api/patients/p_1001', query: { id: 'p_1001' } });
-check('patient detail', detail.code === 0 && detail.data.profile.id === 'p_1001', detail.data?.profile?.name);
+const detail = await call('server/patients/[id]/index.js', { ...docAuth, url: `/api/patients/${T1.id}`, query: { id: T1.id } });
+check('patient detail', detail.code === 0 && detail.data.profile.id === T1.id, detail.data?.profile?.name);
 const timeline = await call('server/patients/[id]/records.js', { ...docAuth, url: '/api/patients/p_1009/records', query: { id: 'p_1009' } });
 check('timeline merged', timeline.code === 0 && timeline.data.items.length > 0, timeline.data?.items?.length);
 const trend = await call('server/patients/[id]/trend.js', { ...docAuth, url: '/api/patients/p_1009/trend', query: { id: 'p_1009', days: '90' } });
@@ -100,9 +145,9 @@ check('trend points', trend.code === 0 && trend.data.points.length >= 5, trend.d
 
 console.log('\n[6] 乐观锁：随访设置');
 const cur = detail.data.profile.version ?? 1;
-const conflict = await call('server/patients/[id]/followup.js', { ...docAuth, method: 'PUT', url: '/api/patients/p_1001/followup', query: { id: 'p_1001' }, body: { date: '2026-09-20', version: cur + 100 } });
+const conflict = await call('server/patients/[id]/followup.js', { ...docAuth, method: 'PUT', url: `/api/patients/${T1.id}/followup`, query: { id: T1.id }, body: { date: '2026-09-20', version: cur + 100 } });
 check('version conflict -> 409', conflict.code === 40903, conflict);
-const fu = await call('server/patients/[id]/followup.js', { ...docAuth, method: 'PUT', url: '/api/patients/p_1001/followup', query: { id: 'p_1001' }, body: { date: '2026-09-20', version: cur } });
+const fu = await call('server/patients/[id]/followup.js', { ...docAuth, method: 'PUT', url: `/api/patients/${T1.id}/followup`, query: { id: T1.id }, body: { date: '2026-09-20', version: cur } });
 check('followup set ok', fu.code === 0 && fu.data.nextFollowupDate === '2026-09-20', fu);
 
 console.log('\n[7] 复诊计划与提醒推送');
@@ -112,19 +157,19 @@ const rr = await call('server/patients/[id]/revisit.js', { ...docAuth, method: '
 check('revisit reminder sent', rr.code === 0 && rr.data.sent === true, rr);
 
 console.log('\n[8] MDT 全流程');
-const mdt = await call('server/patients/[id]/mdt.js', { ...docAuth, method: 'POST', url: '/api/patients/p_1003/mdt', query: { id: 'p_1003' }, body: { action: 'initiate', reason: '疑难病例，血脂控制不佳', specialists: [{ dept: '营养科', expert: '王芳' }, { dept: '内分泌科', expert: '刘强' }] } });
+const mdt = await call('server/patients/[id]/mdt.js', { ...docAuth, method: 'POST', url: `/api/patients/${T1.id}/mdt`, query: { id: T1.id }, body: { action: 'initiate', reason: '疑难病例，血脂控制不佳', specialists: [{ dept: '营养科', expert: '王芳' }, { dept: '内分泌科', expert: '刘强' }] } });
 check('mdt initiate', mdt.code === 0 && mdt.data.status === 'pending', mdt);
 const mdtId = mdt.data?.id;
-const fb = await call('server/patients/[id]/mdt.js', { ...docAuth, method: 'POST', url: '/api/patients/p_1003/mdt', query: { id: 'p_1003' }, body: { action: 'feedback', mdtId, expert: '王芳', dept: '营养科', opinion: '建议低碳水饮食方案' } });
+const fb = await call('server/patients/[id]/mdt.js', { ...docAuth, method: 'POST', url: `/api/patients/${T1.id}/mdt`, query: { id: T1.id }, body: { action: 'feedback', mdtId, expert: '王芳', dept: '营养科', opinion: '建议低碳水饮食方案' } });
 check('mdt feedback', fb.code === 0 && fb.data.status === 'feedback', fb);
-const arch = await call('server/patients/[id]/mdt.js', { ...docAuth, method: 'POST', url: '/api/patients/p_1003/mdt', query: { id: 'p_1003' }, body: { action: 'archive', mdtId, conclusion: '维持低脂饮食+运动处方，1个月后复评' } });
+const arch = await call('server/patients/[id]/mdt.js', { ...docAuth, method: 'POST', url: `/api/patients/${T1.id}/mdt`, query: { id: T1.id }, body: { action: 'archive', mdtId, conclusion: '维持低脂饮食+运动处方，1个月后复评' } });
 check('mdt archive', arch.code === 0 && arch.data.status === 'done', arch);
-const mdtDetail = await call('server/patients/[id]/index.js', { ...docAuth, url: '/api/patients/p_1003', query: { id: 'p_1003' } });
+const mdtDetail = await call('server/patients/[id]/index.js', { ...docAuth, url: `/api/patients/${T1.id}`, query: { id: T1.id } });
 check('mdt conclusion in archive', mdtDetail.data.archive.some(a => a.kind === 'mdt'), mdtDetail.data?.archive);
 
 console.log('\n[9] 医生数据隔离');
 const doc2Login = await call('server/auth/login.js', { method: 'POST', body: { mode: 'password', username: 'GBMZ', passwordHash: sha('123456') } });
-const other = await call('server/patients/[id]/index.js', { token: doc2Login.data.accessToken, url: '/api/patients/p_1001', query: { id: 'p_1001' } });
+const other = await call('server/patients/[id]/index.js', { token: doc2Login.data.accessToken, url: `/api/patients/${T1.id}`, query: { id: T1.id } });
 check('isolation baseline visible for owner', other.code === 0, other.code);
 
 console.log('\n[10] 患者：短信登录 + 指标填报（硬/软校验）');
@@ -159,8 +204,9 @@ console.log('\n[11.5] 患者填报 → 医生端推送');
 const docMsgs = await call('server/messages/index.js', { ...docAuth, url: '/api/messages' });
 const submits = (docMsgs.data?.items || []).filter((m) => m.type === 'patient_submit');
 check('doctor receives patient_submit pushes', docMsgs.code === 0 && submits.length >= 4, submits.length);
-check('push carries from/link and abnormal flag', submits.length >= 4 && submits.every((m) => m.from === '王小明' && m.link === '/patients/p_1009')
-  && submits.some((m) => m.title.includes('含异常值')), submits.map((m) => m.title));
+const p1009Submits = submits.filter((m) => m.link === '/patients/p_1009');
+check('push carries from/link and abnormal flag', p1009Submits.length >= 4 && p1009Submits.every((m) => m.from === '王小明')
+  && p1009Submits.some((m) => m.title.includes('含异常值')), submits.map((m) => m.title));
 const docMsgReadAll = await call('server/messages/read-all.js', { ...docAuth, method: 'POST', body: {} });
 check('doctor read-all msgs ok', docMsgReadAll.code === 0, docMsgReadAll);
 const docMsgs2 = await call('server/messages/index.js', { ...docAuth, url: '/api/messages' });
@@ -202,7 +248,7 @@ check('upload reject gif', upBad.code === 42200, upBad);
 console.log('\n[15] 患者越权防护');
 const hack = await call('server/records/vitals.js', { ...patAuth, method: 'POST', body: { recordDate: '2026-09-08' } });
 check('vitals require at least one field', hack.code === 42200, hack);
-const forbidden = await call('server/patients/[id]/followup.js', { ...patAuth, method: 'PUT', url: '/api/patients/p_1002/followup', query: { id: 'p_1002' }, body: { date: '2026-09-30' } });
+const forbidden = await call('server/patients/[id]/followup.js', { ...patAuth, method: 'PUT', url: `/api/patients/${T2.id}/followup`, query: { id: T2.id }, body: { date: '2026-09-30' } });
 check('patient cannot set followup -> 403', forbidden.code === 40300, forbidden);
 
 console.log('\n[16] 定时任务');
@@ -239,11 +285,11 @@ check('nurse cannot create lab -> 403', labNurseHack.code === 40300, labNurseHac
 check('lab hook raises screening case', labGood.code === 0 && labGood.data.screening && labGood.data.screening.created === true, labGood.data?.screening);
 
 console.log('\n[18] 专病建档：查看/建档/BMI自动计算/风险分层/随访自动排期');
-const mrEmpty = await call('server/medical-records.js', { ...docAuth, url: '/api/medical-records?patientId=p_1004', query: { patientId: 'p_1004' } });
+const mrEmpty = await call('server/medical-records.js', { ...docAuth, url: `/api/medical-records?patientId=${T3.id}`, query: { patientId: T3.id } });
 check('medrec GET empty + model suggestion', mrEmpty.code === 0 && mrEmpty.data.record === null && mrEmpty.data.suggestion && typeof mrEmpty.data.suggestion.score === 'number', mrEmpty.data?.suggestion);
 
 const mrPost = await call('server/medical-records.js', { ...docAuth, method: 'POST', url: '/api/medical-records', body: {
-  patientId: 'p_1003', name: '王建国', gender: 'male', visitDate: '2026-08-20', visitDept: '肝病科', insuranceType: '职工医保',
+  patientId: NOACC_PID, name: '赵无账号', gender: 'male', visitDate: '2026-08-20', visitDept: '肝病科', insuranceType: '职工医保',
   height: 170, weight: 85, waist: 102, sbp: 138, dbp: 88,
   smokingHistory: '从不', drinkingHistory: '偶尔', weeklyAlcoholGrams: 30, dietHabit: '高脂', activityLevel: '久坐',
   chiefComplaint: '右上腹胀痛伴纳差1月', presentIllness: '脂肪性肝炎合并2型糖尿病，血糖控制不佳。', discoveryType: '有症状就诊',
@@ -257,18 +303,18 @@ check('BMI auto calc', Math.abs(mrPost.data?.record?.bmi - 29.4) < 0.2, mrPost.d
 check('followup auto set by risk cycle', mrPost.data?.followupAutoSet === true && mrPost.data?.nextFollowupDate > today, mrPost.data?.nextFollowupDate);
 check('model score attached', typeof mrPost.data?.record?.riskScore === 'number' && Array.isArray(mrPost.data?.record?.riskModelReasons), mrPost.data?.record?.riskScore);
 
-const mrConflict = await call('server/medical-records.js', { ...docAuth, method: 'POST', url: '/api/medical-records', body: { patientId: 'p_1003', name: '王建国', gender: 'male', riskLevel: 'low', version: 999 } });
+const mrConflict = await call('server/medical-records.js', { ...docAuth, method: 'POST', url: '/api/medical-records', body: { patientId: NOACC_PID, name: '赵无账号', gender: 'male', riskLevel: 'low', version: 999 } });
 check('medrec version conflict -> 409', mrConflict.code === 40903, mrConflict);
 
-const mrPatient = await call('server/patients/[id]/index.js', { ...docAuth, url: '/api/patients/p_1003', query: { id: 'p_1003' } });
+const mrPatient = await call('server/patients/[id]/index.js', { ...docAuth, url: `/api/patients/${NOACC_PID}`, query: { id: NOACC_PID } });
 check('patient risk synced from medrec', mrPatient.data?.profile?.risk === 'high', mrPatient.data?.profile?.risk);
-const mrHighHack = await call('server/medical-records.js', { ...patAuth, method: 'POST', body: { patientId: 'p_1004', name: '李秀英', gender: 'female', riskLevel: 'low' } });
+const mrHighHack = await call('server/medical-records.js', { ...patAuth, method: 'POST', body: { patientId: T3.id, name: '李秀英', gender: 'female', riskLevel: 'low' } });
 check('patient cannot create medrec -> 403', mrHighHack.code === 40300, mrHighHack);
 
 console.log('\n[18.5] 专病档案中心：列表 + 一站式建档');
 const regList0 = await call('server/registry/index.js', { ...docAuth, url: '/api/registry' });
 check('registry list default archived', regList0.code === 0 && regList0.data.stats.archived >= 1 && regList0.data.items.every(r => r.archived), regList0.data?.stats);
-check('registry list contains p_1003 v1', regList0.data.items.some(r => r.patientId === 'p_1003' && r.version >= 1), null);
+check('registry list contains noacc v1', regList0.data.items.some(r => r.patientId === NOACC_PID && r.version >= 1), null);
 const regPending = await call('server/registry/index.js', { ...docAuth, url: '/api/registry?status=pending', query: { status: 'pending' } });
 check('registry pending filter + stats', regPending.code === 0 && regPending.data.items.every(r => !r.archived) && regPending.data.stats.pending >= 1, regPending.data?.stats);
 const regNurseView = await call('server/registry/index.js', { ...nurseAuth, url: '/api/registry' });
@@ -332,11 +378,11 @@ check('registry row carries inpatientNumber', regNewRow?.inpatientNumber === 'ZY
 check('registry row carries followup status scheduled', regNewRow?.followupStatus === 'scheduled' && regNewRow?.followupStatusLabel === '已预约', [regNewRow?.followupStatus, regNewRow?.followupStatusLabel]);
 
 // 待完善：最小字段建档（缺 BMI/超声/肝功/血糖/甘油三酯）→ completeness 不完整 + 列表可筛出
-const incCreate = await call('server/medical-records.js', { ...docAuth, method: 'POST', url: '/api/medical-records', body: { patientId: 'p_1007', name: '孙明', gender: 'male', riskLevel: 'mid' } });
+const incCreate = await call('server/medical-records.js', { ...docAuth, method: 'POST', url: '/api/medical-records', body: { patientId: T3.id, name: '李秀英', gender: 'female', riskLevel: 'mid' } });
 check('medrec save returns incomplete completeness', incCreate.code === 0 && incCreate.data?.completeness?.complete === false && incCreate.data.completeness.missing.length >= 3, incCreate.data?.completeness);
 const regInc = await call('server/registry/index.js', { ...docAuth, url: '/api/registry?status=incomplete', query: { status: 'incomplete' } });
-check('registry incomplete filter + stats', regInc.code === 0 && regInc.data.stats.incomplete >= 1 && regInc.data.items.some(r => r.patientId === 'p_1007' && r.incomplete), regInc.data?.stats);
-check('incomplete row carries missing labels', regInc.data.items.some(r => r.patientId === 'p_1007' && Array.isArray(r.missingItems) && r.missingItems.length >= 3), null);
+check('registry incomplete filter + stats', regInc.code === 0 && regInc.data.stats.incomplete >= 1 && regInc.data.items.some(r => r.patientId === T3.id && r.incomplete), regInc.data?.stats);
+check('incomplete row carries missing labels', regInc.data.items.some(r => r.patientId === T3.id && Array.isArray(r.missingItems) && r.missingItems.length >= 3), null);
 
 console.log('\n[18.7] 专病建档删除：权限 / 状态回收 / 重复删除');
 const delPid = regGenderFallback.data.patientId;
@@ -355,60 +401,61 @@ check('delete non-archived again -> 404', delAgain.code === 40404, delAgain);
 
 console.log('\n[19] 筛查识别：列表/自动筛查/决策');
 const sc0 = await call('server/screening/index.js', { ...docAuth, url: '/api/screening' });
-check('screening list seeded', sc0.code === 0 && sc0.data.stats.pending >= 2, sc0.data?.stats);
+check('screening list from lab hooks', sc0.code === 0 && sc0.data.stats.pending >= 2, sc0.data?.stats);
 const scRun = await call('server/screening/index.js', { ...docAuth, method: 'POST', body: { action: 'run' } });
-check('screening run scans patients', scRun.code === 0 && scRun.data.scanned >= 9 && scRun.data.newCases >= 1, scRun.data);
+check('screening run scans patients', scRun.code === 0 && scRun.data.scanned >= 5 && scRun.data.newCases >= 1, scRun.data);
 const sc0b = await call('server/screening/index.js', { ...docAuth, url: '/api/screening?status=pending', query: { status: 'pending' } });
 check('pending cases after run', sc0b.code === 0 && sc0b.data.items.length >= 3, sc0b.data?.stats);
 
-const scAccept = await call('server/screening/[id]/decision.js', { ...docAuth, method: 'POST', url: '/api/screening/sc_seed_1005/decision', query: { id: 'sc_seed_1005' }, body: { decision: 'accept', reason: '超重合并超声阳性，纳入管理' } });
+const scAccept = await call('server/screening/[id]/decision.js', { ...docAuth, method: 'POST', url: `/api/screening/${SC_T2}/decision`, query: { id: SC_T2 }, body: { decision: 'accept', reason: '超重合并检验阳性，纳入管理' } });
 check('screening accept', scAccept.code === 0 && scAccept.data.status === 'accepted' && scAccept.data.riskApplied === 'mid', scAccept.data);
 check('accept reschedules followup to future', !!scAccept.data?.nextFollowupDate && scAccept.data.nextFollowupDate > today, scAccept.data);
-const p1005After = await call('server/patients/[id]/index.js', { ...docAuth, url: '/api/patients/p_1005', query: { id: 'p_1005' } });
-check('accepted risk synced to patient', p1005After.data?.profile?.risk === 'mid' && p1005After.data.profile.nextFollowupDate > today, [p1005After.data?.profile?.risk, p1005After.data?.profile?.nextFollowupDate]);
-const scReAccept = await call('server/screening/[id]/decision.js', { ...docAuth, method: 'POST', url: '/api/screening/sc_seed_1005/decision', query: { id: 'sc_seed_1005' }, body: { decision: 'reject', reason: '重复决策' } });
+const t2After = await call('server/patients/[id]/index.js', { ...docAuth, url: `/api/patients/${T2.id}`, query: { id: T2.id } });
+check('accepted risk synced to patient', t2After.data?.profile?.risk === 'mid' && t2After.data.profile.nextFollowupDate > today, [t2After.data?.profile?.risk, t2After.data?.profile?.nextFollowupDate]);
+const scReAccept = await call('server/screening/[id]/decision.js', { ...docAuth, method: 'POST', url: `/api/screening/${SC_T2}/decision`, query: { id: SC_T2 }, body: { decision: 'reject', reason: '重复决策' } });
 check('re-decision -> 409', scReAccept.code === 40902, scReAccept);
-const scReject = await call('server/screening/[id]/decision.js', { ...docAuth, method: 'POST', url: '/api/screening/sc_seed_1008/decision', query: { id: 'sc_seed_1008' }, body: { decision: 'reject', reason: '既往已确诊，走专病门诊路径' } });
+const scReject = await call('server/screening/[id]/decision.js', { ...docAuth, method: 'POST', url: `/api/screening/${SC_T5}/decision`, query: { id: SC_T5 }, body: { decision: 'reject', reason: '既往已确诊，走专病门诊路径' } });
 check('screening reject', scReject.code === 0 && scReject.data.status === 'rejected', scReject.data);
 const scNurse = await call('server/screening/index.js', { ...nurseAuth, method: 'POST', body: { action: 'run' } });
 check('nurse cannot run screening -> 403', scNurse.code === 40300, scNurse);
 
 console.log('\n[20] 预警提醒：列表/处理');
 const al0 = await call('server/alerts/index.js', { ...docAuth, url: '/api/alerts' });
-check('alerts list', al0.code === 0 && al0.data.items.length >= 3 && al0.data.stats.open >= 2, al0.data?.stats);
+check('alerts list', al0.code === 0 && al0.data.items.length >= 2 && al0.data.stats.open >= 2, al0.data?.stats);
 const alHigh = await call('server/alerts/index.js', { ...docAuth, url: '/api/alerts?level=high&status=open', query: { level: 'high', status: 'open' } });
 check('alerts filter level+status', alHigh.code === 0 && alHigh.data.items.every(a => a.level === 'high' && a.status === 'open'), alHigh.data?.items?.length);
-const alHandle = await call('server/alerts/[id]/handle.js', { ...docAuth, method: 'POST', url: '/api/alerts/al_seed_2/handle', query: { id: 'al_seed_2' }, body: { note: '已电话联系，重新预约随访' } });
+const alT2 = al0.data.items.find(a => a.patientId === T2.id && a.status === 'open');
+const alHandle = await call('server/alerts/[id]/handle.js', { ...docAuth, method: 'POST', url: `/api/alerts/${alT2.id}/handle`, query: { id: alT2.id }, body: { note: '已电话联系，重新预约随访' } });
 check('alert handle', alHandle.code === 0 && alHandle.data.status === 'handled', alHandle.data);
-const alHandleAgain = await call('server/alerts/[id]/handle.js', { ...docAuth, method: 'POST', url: '/api/alerts/al_seed_2/handle', query: { id: 'al_seed_2' }, body: {} });
+const alHandleAgain = await call('server/alerts/[id]/handle.js', { ...docAuth, method: 'POST', url: `/api/alerts/${alT2.id}/handle`, query: { id: alT2.id }, body: {} });
 check('alert re-handle idempotent', alHandleAgain.code === 0, alHandleAgain);
 
 console.log('\n[21] 随访管理：列表/一键提醒/执行/失访');
-// 造一个逾期状态：p_1006 随访日期设为 3 天前
-const fuOverdueSet = await call('server/patients/[id]/followup.js', { ...docAuth, method: 'PUT', url: '/api/patients/p_1006/followup', query: { id: 'p_1006' }, body: { date: dstr(-3) } });
+// 造一个逾期状态：T3 随访日期设为 3 天前
+const fuOverdueSet = await call('server/patients/[id]/followup.js', { ...docAuth, method: 'PUT', url: `/api/patients/${T3.id}/followup`, query: { id: T3.id }, body: { date: dstr(-3) } });
 check('setup overdue followup', fuOverdueSet.code === 0, fuOverdueSet);
 const fu0 = await call('server/followups/index.js', { ...docAuth, url: '/api/followups' });
 check('followup plan list + stats', fu0.code === 0 && typeof fu0.data.stats.overdue === 'number', fu0.data?.stats);
-check('overdue patient p_1006 listed', fu0.data.items.some(x => x.patientId === 'p_1006' && x.status === 'overdue'), fu0.data?.items?.filter(x => x.status === 'overdue').map(x => x.patientId));
+check('overdue patient T3 listed', fu0.data.items.some(x => x.patientId === T3.id && x.status === 'overdue'), fu0.data?.items?.filter(x => x.status === 'overdue').map(x => x.patientId));
 
-const fuRemind = await call('server/followups/remind.js', { ...docAuth, method: 'POST', body: { patientIds: ['p_1009', 'p_1001'] } });
+const fuRemind = await call('server/followups/remind.js', { ...docAuth, method: 'POST', body: { patientIds: ['p_1009', NOACC_PID] } });
 check('one-click remind: sent 1 skipped 1', fuRemind.code === 0 && fuRemind.data.sent === 1 && fuRemind.data.skipped.length === 1, fuRemind.data);
 
-const fuExec = await call('server/followups/[id]/execute.js', { ...docAuth, method: 'POST', url: '/api/followups/p_1005/execute', query: { id: 'p_1005' }, body: { method: '电话', outcome: '患者知晓随访安排，自述控制饮食中', conclusion: '3个月后门诊复查' } });
+const fuExec = await call('server/followups/[id]/execute.js', { ...docAuth, method: 'POST', url: `/api/followups/${T2.id}/execute`, query: { id: T2.id }, body: { method: '电话', outcome: '患者知晓随访安排，自述控制饮食中', conclusion: '3个月后门诊复查' } });
 check('followup execute + auto nextDate', fuExec.code === 0 && !!fuExec.data.nextFollowupDate, fuExec.data);
-const fuRec = await call('server/followups/index.js', { ...docAuth, url: '/api/followups?patientId=p_1005', query: { patientId: 'p_1005' } });
+const fuRec = await call('server/followups/index.js', { ...docAuth, url: `/api/followups?patientId=${T2.id}`, query: { patientId: T2.id } });
 check('followup records query', fuRec.code === 0 && fuRec.data.records.length >= 1, fuRec.data?.records?.length);
-const fuLost = await call('server/followups/[id]/lost.js', { ...docAuth, method: 'POST', url: '/api/followups/p_1003/lost', query: { id: 'p_1003' }, body: { reason: '迁居外地，联系方式失效' } });
+const fuLost = await call('server/followups/[id]/lost.js', { ...docAuth, method: 'POST', url: `/api/followups/${T1.id}/lost`, query: { id: T1.id }, body: { reason: '迁居外地，联系方式失效' } });
 check('mark lost', fuLost.code === 0 && !!fuLost.data.lostAt, fuLost.data);
 const fuLostList = await call('server/followups/index.js', { ...docAuth, url: '/api/followups?status=lost', query: { status: 'lost' } });
-check('lost filter', fuLostList.code === 0 && fuLostList.data.items.some(x => x.patientId === 'p_1003'), fuLostList.data?.items?.map(x => x.patientId));
-const fuNurseHack = await call('server/followups/[id]/execute.js', { ...nurseAuth, method: 'POST', url: '/api/followups/p_1002/execute', query: { id: 'p_1002' }, body: { method: '电话', outcome: 'test' } });
+check('lost filter', fuLostList.code === 0 && fuLostList.data.items.some(x => x.patientId === T1.id), fuLostList.data?.items?.map(x => x.patientId));
+const fuNurseHack = await call('server/followups/[id]/execute.js', { ...nurseAuth, method: 'POST', url: `/api/followups/${T3.id}/execute`, query: { id: T3.id }, body: { method: '电话', outcome: 'test' } });
 check('nurse cannot execute followup -> 403', fuNurseHack.code === 40300, fuNurseHack);
 
 console.log('\n[22] 质量看板：指标/分布/趋势');
 const q = await call('server/quality.js', { ...docAuth, url: '/api/quality?days=30', query: { days: '30' } });
 check('quality metrics present', q.code === 0 && q.data.metrics.followupRate && q.data.metrics.lostRate && q.data.metrics.archiveRate && q.data.metrics.highRiskRatio && q.data.metrics.revisitRate, q.data?.metrics);
-check('archiveRate counts >= 4', q.data.metrics.archiveRate.num >= 4, q.data.metrics.archiveRate);
+check('archiveRate counts >= 3', q.data.metrics.archiveRate.num >= 3, q.data.metrics.archiveRate);
 check('lostRate counts >= 1', q.data.metrics.lostRate.num >= 1, q.data.metrics.lostRate);
 check('risk distribution', q.data.riskDist && Object.values(q.data.riskDist).some(v => v > 0), q.data?.riskDist);
 check('trend 30 days', q.data.trend.length === 30 && q.data.trend.every(d => 'archived' in d && 'followups' in d), q.data?.trend?.length);
@@ -423,7 +470,7 @@ check('doctor education history', eduDocList.code === 0 && eduDocList.data.mater
 
 console.log('\n[24] 工作台增强：预警/筛查/质控摘要 + 随访弹窗');
 const dash2 = await call('server/dashboard.js', { ...docAuth, url: '/api/dashboard' });
-check('dashboard qc summary', dash2.data.metrics.archived >= 4 && typeof dash2.data.metrics.lost === 'number' && dash2.data.metrics.highRisk >= 1, dash2.data?.metrics);
+check('dashboard qc summary', dash2.data.metrics.archived >= 3 && typeof dash2.data.metrics.lost === 'number' && dash2.data.metrics.highRisk >= 1, dash2.data?.metrics);
 check('dashboard alerts summary', dash2.data.alerts && dash2.data.alerts.openCount >= 1 && dash2.data.alerts.items.length >= 1, dash2.data?.alerts);
 check('dashboard screening pending', typeof dash2.data.metrics.screeningPending === 'number', dash2.data?.metrics?.screeningPending);
 check('followup popup data source', Array.isArray(dash2.data.followupPopup) && dash2.data.followupPopup.length >= 1, dash2.data?.followupPopup?.length);

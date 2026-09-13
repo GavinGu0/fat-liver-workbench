@@ -31,9 +31,22 @@
         <div class="grid-item" @click="$router.push('/timeline')">
           <div class="grid-icon">📋</div><div class="grid-label">记录时间轴</div>
         </div>
-        <div class="grid-item" @click="logout">
+        <div class="grid-item" @click="$router.push('/profile')">
+          <div class="grid-icon">👤</div><div class="grid-label">个人中心</div>
+        </div>
+        <div class="grid-item" @click="confirmVisible = true">
           <div class="grid-icon">🚪</div><div class="grid-label">退出登录</div>
         </div>
+      </div>
+    </div>
+
+    <!-- 退出登录确认 -->
+    <div class="mask" v-if="confirmVisible" @click.self="confirmVisible = false">
+      <div class="sheet">
+        <h3>退出登录</h3>
+        <p style="line-height:1.7;font-size:14px">确定要退出当前账号吗？退出后需要重新登录才能查看您的健康数据。</p>
+        <button class="btn danger" :disabled="loggingOut" @click="doLogout">{{ loggingOut ? '退出中…' : '确定退出' }}</button>
+        <button class="btn plain" @click="confirmVisible = false">取消</button>
       </div>
     </div>
 
@@ -65,6 +78,8 @@ const followup = ref(null);
 const unread = ref(0);
 const todayCount = ref(0);
 const today = todayStr();
+const confirmVisible = ref(false);
+const loggingOut = ref(false);
 
 onMounted(async () => {
   try {
@@ -79,9 +94,16 @@ onMounted(async () => {
   } catch { /* 静默 */ }
 });
 
-async function logout() {
-  try { await api.logout(tokenStore.refresh); } catch { /* 忽略 */ }
-  tokenStore.clear();
-  router.replace('/login');
+/** 安全退出：吊销服务端 Refresh Token → 清空本地会话 → 回登录页 */
+async function doLogout() {
+  loggingOut.value = true;
+  try {
+    await api.logout(tokenStore.refresh).catch(() => {}); // 吊销失败不阻塞本地退出
+    tokenStore.clear();
+    confirmVisible.value = false;
+    router.replace('/login');
+  } finally {
+    loggingOut.value = false;
+  }
 }
 </script>
