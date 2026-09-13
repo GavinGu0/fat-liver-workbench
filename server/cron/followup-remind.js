@@ -13,6 +13,8 @@ const { getPatient, pushMsg, audit } = require('../_lib/services');
 const { sendReminder, processRetryQueue } = require('../_lib/notify');
 const { raiseAlert } = require('../_lib/clinic');
 const { putJson, blobConfigured } = require('../_lib/blob');
+const blobSnapshot = require('../_lib/blob-snapshot');
+const { mode } = require('../_lib/storage');
 const { ApiError } = require('../_lib/response');
 const logger = require('../_lib/logger');
 
@@ -145,7 +147,7 @@ module.exports = defineHandler({
           vitalsCount: Number(await db.zcard(K.vitals(pid))) || 0
         });
       }
-      snapshot.totals = { patients: snapshot.patients.length, storage: 'memory' };
+      snapshot.totals = { patients: snapshot.patients.length, storage: mode() };
       if (blobConfigured()) {
         const url = await putJson(`backups/${today}.json`, snapshot);
         result.backup = { type: 'blob', url };
@@ -155,6 +157,13 @@ module.exports = defineHandler({
       }
     } catch (e) {
       logger.warn('cron.backup.fail', { message: e.message });
+    }
+
+    // 4) L3 全量云快照（Vercel Blob，每日兜底，无视节流）
+    try {
+      result.l3Snapshot = await blobSnapshot.uploadNow(db);
+    } catch (e) {
+      logger.warn('cron.l3-snapshot.fail', { message: e.message });
     }
 
     await audit('cron.daily', { ...result });

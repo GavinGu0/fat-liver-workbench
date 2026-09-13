@@ -74,8 +74,8 @@
       <el-main class="main">
         <el-alert
           v-if="demoMode" type="info" :closable="false" style="margin-bottom:12px"
-          title="演示模式：数据存于实例内存"
-          description="本项目为纯内存存储（零外部依赖），服务重启后数据将恢复为演示种子数据。单机本地运行时数据实时一致；Vercel 多实例部署下，各实例内存相互隔离，同一操作可能在不同实例上看到不同结果（属于预期行为）。"
+          title="临时存储模式"
+          description="本地/自托管运行时数据落盘 SQLite 文件（data/flwb.db）持久保存；Vercel 部署下受平台只读文件系统限制，数据仅存于实例内存/临时目录，实例回收后重置为演示种子数据（平台物理限制，非缺陷）。"
           show-icon
         />
         <router-view />
@@ -103,11 +103,11 @@ async function loadUnread() {
   } catch { /* 静默：未读数刷新失败不打扰使用 */ }
 }
 
-/* 演示模式自检：生产构建下提示数据重置特性 */
+/* 临时存储自检：生产构建下提示数据持久化特性（sqlite=实例级临时，memory=进程内存） */
 async function checkStorageMode() {
   try {
     const h = await api.health();
-    if (import.meta.env.PROD && h && h.storage === 'memory') demoMode.value = true;
+    if (import.meta.env.PROD && h && ['memory', 'sqlite'].includes(h.storage)) demoMode.value = true;
   } catch { /* 静默：健康检查失败不阻塞界面 */ }
 }
 

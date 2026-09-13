@@ -15,6 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { ApiError } = require('./response');
+const blobSnapshot = require('./blob-snapshot');
 
 /* ---------------- Key 设计（与业务层约定，勿随意改动） ---------------- */
 const K = {
@@ -131,32 +132,76 @@ function tryRestoreSnapshot() {
 /* ---------------- 内存存储实现 ---------------- */
 const MAX_KEYS = 50000; // 单实例上限保护，防止 Vercel 内存溢出
 
+/** 行式结构 → 内存 Map（L3 Blob 快照 / 统一导出格式的恢复路径） */
+function restoreRows(map, rows) {
+  map.clear();
+  const t = Date.now();
+  const live = (exp) => !exp || exp > t;
+  for (const r of rows.kv || []) {
+    if (live(r.exp)) map.set(r.key, { type: 'kv', v: r.val, exp: r.exp ?? null });
+  }
+  for (const r of rows.hashes || []) {
+    if (!live(r.exp)) continue;
+    let e = map.get(r.key);
+    if (!e || e.type !== 'h') { e = { type: 'h', v: {}, exp: r.exp ?? null }; map.set(r.key, e); }
+    let v; try { v = JSON.parse(r.val); } catch { v = r.val; }
+    e.v[r.field] = v;
+  }
+  for (const r of rows.lists || []) {
+    if (!live(r.exp)) continue;
+    let e = map.get(r.key);
+    if (!e || e.type !== 'l') { e = { type: 'l', v: [], exp: r.exp ?? null }; map.set(r.key, e); }
+    e.v[r.pos] = r.val;
+  }
+  for (const r of rows.sets || []) {
+    if (!live(r.exp)) continue;
+    let e = map.get(r.key);
+    if (!e || e.type !== 's') { e = { type: 's', v: new Set(), exp: r.exp ?? null }; map.set(r.key, e); }
+    e.v.add(r.member);
+  }
+  for (const r of rows.zsets || []) {
+    if (!live(r.exp)) continue;
+    let e = map.get(r.key);
+    if (!e || e.type !== 'z') { e = { type: 'z', v: new Map(), exp: r.exp ?? null }; map.set(r.key, e); }
+    e.v.set(r.member, Number(r.score));
+  }
+  // 压缩 list 稀疏位
+  for (const e of map.values()) {
+    if (e.type === 'l' && Array.isArray(e.v)) e.v = e.v.filter(x => x !== undefined);
+  }
+  return map.size;
+}
+
+/** 旧版对象格式快照（/tmp 快照历史格式）→ 内存 Map */
+function restoreLegacy(map, obj) {
+  for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === 'object' && 't' in v && 'v' in v && 'type' in v) {
+      const entry = { type: v.type, v: v.v, exp: v.exp ?? null };
+      if (entry.exp && entry.exp <= Date.now()) continue;
+      switch (entry.type) {
+        case 's': entry.v = new Set(entry.v); break;
+        case 'z': {
+          const m = new Map();
+          for (const [mk, mv] of Object.entries(entry.v)) m.set(mk, mv);
+          entry.v = m;
+          break;
+        }
+        case 'l': if (!Array.isArray(entry.v)) entry.v = []; break;
+        case 'h': if (typeof entry.v !== 'object') entry.v = {}; break;
+        default: break;
+      }
+      map.set(k, entry);
+    }
+  }
+  return map.size;
+}
+
 function memoryStore(initialData) {
   const data = new Map();
 
-  // 恢复快照数据
   if (initialData) {
-    for (const [k, v] of Object.entries(initialData)) {
-      if (v && typeof v === 'object' && 't' in v && 'v' in v && 'type' in v) {
-        const entry = { type: v.type, v: v.v, exp: v.exp ?? null };
-        // 过期键直接跳过
-        if (entry.exp && entry.exp <= Date.now()) continue;
-        // 重新构造内部数据结构（Set/Map/Array/Object）
-        switch (entry.type) {
-          case 's': entry.v = new Set(entry.v); break;
-          case 'z': {
-            const m = new Map();
-            for (const [mk, mv] of Object.entries(entry.v)) m.set(mk, mv);
-            entry.v = m;
-            break;
-          }
-          case 'l': if (!Array.isArray(entry.v)) entry.v = []; break;
-          case 'h': if (typeof entry.v !== 'object') entry.v = {}; break;
-          default: break;
-        }
-        data.set(k, entry);
-      }
-    }
+    if (Array.isArray(initialData.kv)) restoreRows(data, initialData);
+    else restoreLegacy(data, initialData);
   }
 
   const entry = (k) => data.get(k);
@@ -246,21 +291,36 @@ function memoryStore(initialData) {
     },
     async ping() { return 'PONG'; },
 
-    /** 导出全部数据为可 JSON 序列化结构（供快照使用） */
+    /** 导出全部数据为行式结构（与 sqlite._export / L3 Blob 快照统一格式） */
     _export() {
-      const out = {};
+      const rows = { kv: [], hashes: [], lists: [], sets: [], zsets: [] };
       for (const [k, e] of data) {
         if (!shouldSnapshot(k)) continue;
-        let v = e.v;
-        if (e.type === 's') v = [...e.v];
-        else if (e.type === 'z') {
-          const o = {};
-          for (const [mk, mv] of e.v) o[mk] = mv;
-          v = o;
+        if (e.exp && e.exp <= Date.now()) continue;
+        const exp = e.exp ?? null;
+        switch (e.type) {
+          case 'kv': rows.kv.push({ key: k, val: typeof e.v === 'string' ? e.v : JSON.stringify(e.v), exp }); break;
+          case 'counter': rows.kv.push({ key: k, val: String(e.v), exp }); break;
+          case 'h':
+            for (const [f, v] of Object.entries(e.v)) rows.hashes.push({ key: k, field: f, val: JSON.stringify(v), exp });
+            break;
+          case 'l':
+            e.v.forEach((v, i) => rows.lists.push({ key: k, pos: i, val: typeof v === 'string' ? v : JSON.stringify(v), exp }));
+            break;
+          case 's':
+            for (const m of e.v) rows.sets.push({ key: k, member: String(m), exp });
+            break;
+          case 'z':
+            for (const [m, sc] of e.v) rows.zsets.push({ key: k, member: m, score: sc, exp });
+            break;
         }
-        out[k] = { type: e.type, v, exp: e.exp ?? null, t: Date.now() };
       }
-      return out;
+      return rows;
+    },
+
+    /** 从行式结构恢复（事务级全量替换；用于 L3 Blob 快照冷启动引导） */
+    restore(rows) {
+      return restoreRows(data, rows);
     },
 
     /** 统计信息（供健康检查/调试） */
@@ -285,16 +345,105 @@ function memoryStore(initialData) {
 
 /* ---------------- 单例初始化 ---------------- */
 let _rawDb = null;
+let _mode = 'memory';
+let _sqlitePath = null;
 let _initPromise = null;
 
-async function init() {
-  const restored = tryRestoreSnapshot();
-  if (restored) {
-    console.info('[storage] restored', Object.keys(restored).length, 'entries from snapshot');
-  } else {
-    console.info('[storage] no snapshot found, fresh start');
+/** SQLite 落盘路径候选：env 指定 → 项目 data/ → 系统临时目录（Vercel 只读 FS 自动落到这里） */
+function sqliteCandidates() {
+  const list = [];
+  if (process.env.SQLITE_PATH) list.push(process.env.SQLITE_PATH);
+  list.push(path.join(process.cwd(), 'data', 'flwb.db'));
+  list.push(path.join(os.tmpdir(), 'flwb.db'));
+  return list;
+}
+
+/** 依序尝试打开 SQLite；全部失败返回 null（调用方降级内存） */
+function tryOpenSqlite() {
+  try {
+    const sqlite = require('./sqlite');
+    for (const p of sqliteCandidates()) {
+      try {
+        const store = sqlite.open(p, { skipPrefixes: SNAPSHOT_SKIP_PREFIXES });
+        _sqlitePath = p;
+        return store;
+      } catch (e) {
+        console.warn('[storage] sqlite open failed at', p, '-', e.message);
+      }
+    }
+  } catch (e) {
+    console.warn('[storage] node:sqlite unavailable, fallback to memory:', e.message);
   }
-  _rawDb = memoryStore(restored);
+  return null;
+}
+
+/* ---------------- L3 写钩子：写入型操作成功后调度 Blob 快照上传 ---------------- */
+const L3_WRITE_METHODS = new Set(['set', 'del', 'incr', 'expire', 'hset', 'lpush', 'rpush', 'ltrim', 'sadd', 'srem', 'zadd', 'zrem']);
+
+function withL3Hook(store) {
+  if (!blobSnapshot.enabled()) return store;
+  return new Proxy(store, {
+    get(t, prop, recv) {
+      if (!L3_WRITE_METHODS.has(prop)) return Reflect.get(t, prop, recv);
+      const orig = t[prop];
+      return async (...args) => {
+        const r = await orig.apply(t, args);
+        try { blobSnapshot.scheduleUpload(t); } catch { /* 快照失败不影响业务 */ }
+        return r;
+      };
+    }
+  });
+}
+
+async function init() {
+  const driver = (process.env.STORAGE_DRIVER || 'auto').toLowerCase();
+  let store = null;
+
+  /* 驱动选择：auto/sqlite → 优先 SQLite（真实数据库文件）；memory → 强制内存 */
+  if (driver !== 'memory') {
+    store = tryOpenSqlite();
+    if (store) {
+      _mode = 'sqlite';
+      console.info('[storage] driver=sqlite, db path:', _sqlitePath);
+    } else if (driver === 'sqlite') {
+      console.warn('[storage] STORAGE_DRIVER=sqlite but unavailable, falling back to memory');
+    }
+  }
+
+  /* 内存模式（Vercel 兜底 / STORAGE_DRIVER=memory）：带同实例快照恢复 */
+  if (!store) {
+    _mode = 'memory';
+    const restored = tryRestoreSnapshot();
+    if (restored) {
+      console.info('[storage] memory mode, restored', Object.keys(restored).length, 'entries from snapshot');
+    } else {
+      console.info('[storage] memory mode, no snapshot, fresh start');
+    }
+    store = memoryStore(restored);
+  }
+
+  _rawDb = store;
+
+  /* L3 远端快照（Vercel Blob）：仅当本地为全新空库时用云端快照引导，避免覆盖更新的本地数据 */
+  if (blobSnapshot.enabled()) {
+    try {
+      if (store._stats().total === 0) {
+        const payload = await blobSnapshot.download();
+        if (payload) {
+          const n = store.restore(payload.data);
+          console.info('[storage] restored', n, 'rows from Blob snapshot (updatedAt:', payload.updatedAt + ')');
+        } else {
+          console.info('[storage] no remote Blob snapshot, starting fresh');
+        }
+      } else {
+        console.info('[storage] local data present, skip Blob restore (will refresh remote later)');
+      }
+    } catch (e) {
+      console.warn('[storage] blob snapshot init failed:', e.message);
+    }
+  }
+
+  _rawDb = withL3Hook(store);
   return _rawDb;
 }
 
@@ -307,7 +456,7 @@ async function getDb() {
 }
 
 function mode() {
-  return 'memory';
+  return _mode;
 }
 
 /** SET NX EX：幂等键 / 分布式锁 / 一次性标记 */
@@ -350,10 +499,22 @@ async function withLock(key, ttlSeconds, fn, maxWaitMs = 4000) {
   throw new ApiError(429, 42901, '系统繁忙，请稍后重试');
 }
 
-/** 暴露给测试/调试用，生产请勿调用 */
+/** 暴露给测试/调试用，生产请勿调用：关闭并删除所有候选路径的 SQLite 文件与内存快照，重置单例 */
 function resetForTest() {
+  if (_rawDb && typeof _rawDb.close === 'function') {
+    try { _rawDb.close(); } catch { /* ignore */ }
+  }
   _rawDb = null;
   _initPromise = null;
+  blobSnapshot.resetForTest();
+  // 关键：本进程可能尚未初始化（_sqlitePath 为 null），必须遍历全部候选路径清理，
+  // 否则上一进程 process.exit() 强杀留下的 WAL 数据会导致跨运行状态残留
+  for (const p of sqliteCandidates()) {
+    for (const f of [p, p + '-wal', p + '-shm']) {
+      try { fs.rmSync(f, { force: true }); } catch { /* ignore */ }
+    }
+  }
+  _sqlitePath = null;
   try { fs.unlinkSync(SNAPSHOT_PATH); } catch { /* ignore */ }
 }
 

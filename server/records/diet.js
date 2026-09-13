@@ -32,7 +32,7 @@ module.exports = defineHandler({
     /* 写入后读回验证 */
     const verify = await db.lrange(K.diet(user.patientId), 0, 0);
     if (verify.length) {
-      const latest = JSON.parse(typeof verify[0] === 'string' ? verify[0] : verify[0]);
+      const latest = JSON.parse(verify[0]);
       if (latest.id !== record.id) {
         console.error('[storage.verify] diet write verify FAIL id mismatch:', { expect: record.id, got: latest.id });
         throw new ApiError(500, 50010, '数据写入确认失败，请稍后重试');

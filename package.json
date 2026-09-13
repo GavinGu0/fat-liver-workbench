@@ -2,7 +2,7 @@
   "name": "fat-liver-workbench",
   "version": "1.0.0",
   "private": true,
-  "description": "脂肪肝专病管理工作台 — Vercel Serverless + 无数据库方案",
+  "description": "脂肪肝专病管理工作台 — Vercel Serverless + SQLite/内存混合存储",
   "packageManager": "npm@10.9.2",
   "engines": {
     "node": "22.x"
@@ -13,7 +13,10 @@
   ],
   "scripts": {
     "build": "npm run build -w @flwb/admin-web && npm run build -w @flwb/patient-h5 && node scripts/copy-landing.js",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "db:backup": "node scripts/db-backup.mjs backup",
+    "db:restore": "node scripts/db-backup.mjs restore",
+    "db:list": "node scripts/db-backup.mjs list"
   },
   "dependencies": {
     "@vercel/blob": "^0.27.0",

@@ -60,6 +60,10 @@ const sha = (pwd) => createHash('sha256').update(`${pwd}::${SALT}`).digest('hex'
 const dstr = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(Date.now() + offset * 86400000));
 const today = dstr(0);
 
+/* 每次运行重置存储（本地 SQLite 文件 / 内存快照），保证测试确定性、可重复 */
+const { resetForTest, getDb } = require(join(ROOT, 'server/_lib/storage.js'));
+resetForTest();
+
 console.log('\n[1] 健康检查与种子数据');
 const health = await call('server/health.js', {});
 check('health ok', health.code === 0 && health.data.status === 'ok', health);
@@ -474,9 +478,29 @@ check('old refresh token revoked after reset', revokedRefresh.code === 40100, re
 const llFinal = await call('server/auth/login-logs.js', { ...docAuth, url: '/api/auth/login-logs' });
 check('login logs record reset event', llFinal.code === 0 && llFinal.data.stats.reset >= 1 && llFinal.data.stats.success >= 1, llFinal.data?.stats);
 
-console.log('\n[26] 健康检查：存储模式可观测（memory/redis），供前端内存模式告警');
+console.log('\n[26] 健康检查：存储模式可观测（sqlite/memory），供前端临时存储提示');
 const healthChk = await call('server/health.js', { url: '/api/health' });
-check('health exposes storage mode', healthChk.code === 0 && ['memory', 'redis'].includes(healthChk.data.storage), healthChk.data?.storage);
+check('health exposes storage mode', healthChk.code === 0 && ['memory', 'sqlite'].includes(healthChk.data.storage), healthChk.data?.storage);
+check('health exposes L3 snapshot status (disabled without env)', healthChk.code === 0 && healthChk.data?.l3Snapshot?.enabled === false, JSON.stringify(healthChk.data?.l3Snapshot));
+
+console.log('\n[27] 存储导出/恢复往返一致性（L3 Blob 快照的机制基础）');
+const dbx = await getDb();
+await dbx.set('test:rt:k1', 'v1');
+await dbx.hset('test:rt:h1', { a: 1, b: 'x' });
+await dbx.lpush('test:rt:l1', JSON.stringify({ id: 'l1' }));
+await dbx.sadd('test:rt:s1', 'm1');
+await dbx.zadd('test:rt:z1', 1.5, 'm1');
+const dump = dbx._export();
+const rt = await dbx.restore(dump);
+check('restore returns row count', rt >= 5, rt);
+check('restore roundtrip kv', (await dbx.get('test:rt:k1')) === 'v1');
+const rtH = await dbx.hgetall('test:rt:h1');
+check('restore roundtrip hash', rtH && rtH.a === 1 && rtH.b === 'x', JSON.stringify(rtH));
+const rtL = await dbx.lrange('test:rt:l1', 0, -1);
+check('restore roundtrip list', rtL.length === 1 && JSON.parse(rtL[0]).id === 'l1', JSON.stringify(rtL));
+check('restore roundtrip set', (await dbx.sismember('test:rt:s1', 'm1')) === 1);
+check('restore roundtrip zset', (await dbx.zscore('test:rt:z1', 'm1')) === 1.5);
+await dbx.del('test:rt:k1', 'test:rt:h1', 'test:rt:l1', 'test:rt:s1', 'test:rt:z1');
 
 console.log(`\n========== 冒烟测试结果: ${passed} 通过 / ${failed} 失败 ==========`);
 process.exit(failed ? 1 : 0);
