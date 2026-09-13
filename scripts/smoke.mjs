@@ -474,5 +474,9 @@ check('old refresh token revoked after reset', revokedRefresh.code === 40100, re
 const llFinal = await call('server/auth/login-logs.js', { ...docAuth, url: '/api/auth/login-logs' });
 check('login logs record reset event', llFinal.code === 0 && llFinal.data.stats.reset >= 1 && llFinal.data.stats.success >= 1, llFinal.data?.stats);
 
+console.log('\n[26] 健康检查：存储模式可观测（memory/redis），供前端内存模式告警');
+const healthChk = await call('server/health.js', { url: '/api/health' });
+check('health exposes storage mode', healthChk.code === 0 && ['memory', 'redis'].includes(healthChk.data.storage), healthChk.data?.storage);
+
 console.log(`\n========== 冒烟测试结果: ${passed} 通过 / ${failed} 失败 ==========`);
 process.exit(failed ? 1 : 0);

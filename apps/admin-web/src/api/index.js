@@ -6,6 +6,7 @@ export const api = {
   sendSms: (phone) => http.post('/auth/sms', { phone }),
   logout: (refreshToken) => http.post('/auth/logout', { refreshToken }),
   loginLogs: (params) => http.get('/auth/login-logs', { params }),
+  health: () => http.get('/health'),
   config: () => http.get('/config'),
 
   /* 消息中心（医护端） */

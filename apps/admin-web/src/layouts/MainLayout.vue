@@ -71,7 +71,15 @@
           </el-dropdown>
         </div>
       </el-header>
-      <el-main class="main"><router-view /></el-main>
+      <el-main class="main">
+        <el-alert
+          v-if="memoryStorage" type="warning" :closable="false" style="margin-bottom:12px"
+          title="存储告警：当前服务运行在实例内存（演示模式），未接入 Redis/KV"
+          description="多实例部署下数据不共享：患者建档/注册后可能出现列表时而可见、时而不可见，账号登录异常，实例回收后数据丢失。请在 Vercel 项目环境变量配置 Upstash Redis（UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN）后重新部署。"
+          show-icon
+        />
+        <router-view />
+      </el-main>
     </el-container>
   </el-container>
 </template>
@@ -85,6 +93,7 @@ import { api } from '../api';
 const auth = useAuthStore();
 const route = useRoute();
 const unread = ref(0);
+const memoryStorage = ref(false);
 let timer = null;
 
 async function loadUnread() {
@@ -92,6 +101,14 @@ async function loadUnread() {
     const d = await api.messages();
     unread.value = d.unread || 0;
   } catch { /* 静默：未读数刷新失败不打扰使用 */ }
+}
+
+/* 存储模式自检：生产构建下若后端为实例内存存储，顶部展示告警（数据不跨实例、不持久） */
+async function checkStorageMode() {
+  try {
+    const h = await api.health();
+    if (import.meta.env.PROD && h && h.storage === 'memory') memoryStorage.value = true;
+  } catch { /* 静默：健康检查失败不阻塞界面 */ }
 }
 
 function startPolling() {
@@ -106,6 +123,7 @@ function stopPolling() {
 onMounted(() => {
   loadUnread();
   startPolling();
+  checkStorageMode();
 });
 // keep-alive 场景：失活时停止轮询，激活时恢复（onMounted 不会重复触发，需幂等）
 onDeactivated(stopPolling);

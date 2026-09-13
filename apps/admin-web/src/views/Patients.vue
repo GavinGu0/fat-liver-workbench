@@ -118,17 +118,21 @@ function onAutoRefreshChange(on) {
   else stopPolling();
 }
 
+/* 请求序号守卫：30s 轮询与手动刷新/筛选并发时，丢弃过期响应，防止旧数据覆盖新数据（列表"闪变"） */
+let loadSeq = 0;
 async function load(page) {
+  const seq = ++loadSeq;
   loading.value = true;
   try {
     if (page) q.page = page;
     const d = await api.patients({ ...q });
+    if (seq !== loadSeq) return;
     rows.value = d.items;
     total.value = d.total;
   } catch (e) {
-    ElMessage.error(e.message);
+    if (seq === loadSeq) ElMessage.error(e.message);
   } finally {
-    loading.value = false;
+    if (seq === loadSeq) loading.value = false;
   }
 }
 
