@@ -39,8 +39,8 @@ function enabled() {
 
 async function putSnapshot(body) {
   const { put } = await import('@vercel/blob');
-  // @vercel/blob 2.x：访问模式由 store 类型决定（public/private），固定路径覆盖
-  await put(SNAPSHOT_KEY, body, { contentType: 'application/json', addRandomSuffix: false });
+  // 私有 store 需显式 access:'private'（服务端校验必传）；固定路径覆盖
+  await put(SNAPSHOT_KEY, body, { access: 'private', contentType: 'application/json', addRandomSuffix: false });
 }
 
 /** 强制上传（无视节流；供 Cron 每日兜底调用） */
