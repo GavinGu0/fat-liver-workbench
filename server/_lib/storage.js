@@ -199,6 +199,19 @@ function restoreLegacy(map, obj) {
 function memoryStore(initialData) {
   const data = new Map();
 
+  /* 合并元数据（仅 L3 快照启用时有意义）：key 写入时间戳 + 键/成员删除墓碑。
+     多实例并发上传/同步时用于按键级 LWW 合并与删除防复活。 */
+  const meta = { keyTs: new Map(), tombK: new Map(), tombM: new Map() };
+  const wt = (k) => { if (k != null) meta.keyTs.set(k, Date.now()); };
+  const wdel = (k) => { const t = Date.now(); meta.keyTs.set(k, t); meta.tombK.set(k, t); };
+  const wrem = (k, m) => {
+    const t = Date.now();
+    meta.keyTs.set(k, t);
+    let mm = meta.tombM.get(k);
+    if (!mm) { mm = new Map(); meta.tombM.set(k, mm); }
+    for (const x of Array.isArray(m) ? m : [m]) mm.set(String(x), t);
+  };
+
   if (initialData) {
     if (Array.isArray(initialData.kv)) restoreRows(data, initialData);
     else restoreLegacy(data, initialData);
@@ -248,24 +261,24 @@ function memoryStore(initialData) {
     async set(k, v, opts = {}) {
       if (opts.nx && alive(k)) return null;
       data.set(k, { type: 'kv', v, exp: opts.ex ? Date.now() + opts.ex * 1000 : null });
-      writeHook(k);
+      wt(k); writeHook(k);
       return 'OK';
     },
-    async del(...keys) { let n = 0; for (const k of keys) { if (data.delete(k)) n++; } writeHook(keys[0]); return n; },
-    async incr(k) { const e = ensure(k, 'counter'); e.v = Number(e.v || 0) + 1; writeHook(k); return e.v; },
-    async expire(k, sec) { if (alive(k)) { entry(k).exp = Date.now() + sec * 1000; writeHook(k); return 1; } return 0; },
-    async hset(k, obj) { const e = ensure(k, 'h'); Object.assign(e.v, obj); writeHook(k); return Object.keys(obj).length; },
+    async del(...keys) { let n = 0; for (const k of keys) { if (data.delete(k)) n++; wdel(k); } writeHook(keys[0]); return n; },
+    async incr(k) { const e = ensure(k, 'counter'); e.v = Number(e.v || 0) + 1; wt(k); writeHook(k); return e.v; },
+    async expire(k, sec) { if (alive(k)) { entry(k).exp = Date.now() + sec * 1000; wt(k); writeHook(k); return 1; } return 0; },
+    async hset(k, obj) { const e = ensure(k, 'h'); Object.assign(e.v, obj); wt(k); writeHook(k); return Object.keys(obj).length; },
     async hgetall(k) { if (!alive(k)) return null; return { ...entry(k).v }; },
-    async lpush(k, v) { const e = ensure(k, 'l'); e.v.unshift(v); writeHook(k); return e.v.length; },
-    async rpush(k, v) { const e = ensure(k, 'l'); e.v.push(v); writeHook(k); return e.v.length; },
+    async lpush(k, v) { const e = ensure(k, 'l'); e.v.unshift(v); wt(k); writeHook(k); return e.v.length; },
+    async rpush(k, v) { const e = ensure(k, 'l'); e.v.push(v); wt(k); writeHook(k); return e.v.length; },
     async lrange(k, start, stop) { if (!alive(k)) return []; const a = entry(k).v; const s = start < 0 ? Math.max(a.length + start, 0) : start; const end = stop < 0 ? a.length + stop + 1 : stop + 1; return a.slice(s, end); },
-    async ltrim(k, start, stop) { if (alive(k)) { const a = entry(k).v; entry(k).v = a.slice(start, stop < 0 ? a.length + stop + 1 : stop + 1); writeHook(k); } return 'OK'; },
-    async sadd(k, m) { const e = ensure(k, 's'); const add = !e.v.has(m); e.v.add(m); writeHook(k); return add ? 1 : 0; },
-    async srem(k, m) { const e = data.get(k); if (!e) return 0; const had = e.v.has(m); e.v.delete(m); if (had) writeHook(k); return had ? 1 : 0; },
+    async ltrim(k, start, stop) { if (alive(k)) { const a = entry(k).v; entry(k).v = a.slice(start, stop < 0 ? a.length + stop + 1 : stop + 1); wt(k); writeHook(k); } return 'OK'; },
+    async sadd(k, m) { const e = ensure(k, 's'); const add = !e.v.has(m); e.v.add(m); wt(k); writeHook(k); return add ? 1 : 0; },
+    async srem(k, m) { const e = data.get(k); if (!e) return 0; const had = e.v.has(m); e.v.delete(m); if (had) { wrem(k, m); writeHook(k); } return had ? 1 : 0; },
     async smembers(k) { return alive(k) ? [...entry(k).v] : []; },
     async sismember(k, m) { return alive(k) && entry(k).v.has(m) ? 1 : 0; },
-    async zadd(k, score, member) { const e = ensure(k, 'z'); const isNew = !e.v.has(String(member)); e.v.set(String(member), Number(score)); writeHook(k); return isNew ? 1 : 0; },
-    async zrem(k, member) { const e = data.get(k); if (!e) return 0; const had = e.v.has(String(member)); e.v.delete(String(member)); if (had) writeHook(k); return had ? 1 : 0; },
+    async zadd(k, score, member) { const e = ensure(k, 'z'); const isNew = !e.v.has(String(member)); e.v.set(String(member), Number(score)); wt(k); writeHook(k); return isNew ? 1 : 0; },
+    async zrem(k, member) { const e = data.get(k); if (!e) return 0; const had = e.v.has(String(member)); e.v.delete(String(member)); if (had) { wrem(k, member); writeHook(k); } return had ? 1 : 0; },
     async zcard(k) { return alive(k) ? entry(k).v.size : 0; },
     async zscore(k, member) { return alive(k) ? (entry(k).v.get(String(member)) ?? null) : null; },
     async zcount(k, min, max) { if (!alive(k)) return 0; let n = 0; for (const s of entry(k).v.values()) if (s >= min && s <= max) n++; return n; },
@@ -318,9 +331,151 @@ function memoryStore(initialData) {
       return rows;
     },
 
-    /** 从行式结构恢复（事务级全量替换；用于 L3 Blob 快照冷启动引导） */
+    /** 从行式结构恢复（事务级全量替换；用于 L3 Blob 快照冷启动引导）；元数据一并重置 */
     restore(rows) {
+      meta.keyTs.clear(); meta.tombK.clear(); meta.tombM.clear();
       return restoreRows(data, rows);
+    },
+
+    /** 导出合并元数据：键级写入时间戳 + 键/成员删除墓碑（供 L3 快照合并上传） */
+    _mergeMeta() {
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      for (const [k, v] of meta.tombK) if (v < cutoff) meta.tombK.delete(k);
+      for (const [k, mm] of meta.tombM) {
+        for (const [m, v] of mm) if (v < cutoff) mm.delete(m);
+        if (!mm.size) meta.tombM.delete(k);
+      }
+      const toObj = (m) => Object.fromEntries(m);
+      const tombM = {};
+      for (const [k, mm] of meta.tombM) tombM[k] = Object.fromEntries(mm);
+      return { keyTs: toObj(meta.keyTs), tombK: toObj(meta.tombK), tombM };
+    },
+
+    /** 回写合并元数据（取最大时间戳，单调推进）：上传合并/远端同步后保持收敛基准 */
+    _applyMergeMeta(m = {}) {
+      for (const [k, v] of Object.entries(m.keyTs || {})) {
+        const t = Number(v) || 0;
+        meta.keyTs.set(k, Math.max(meta.keyTs.get(k) || 0, t));
+      }
+      for (const [k, v] of Object.entries(m.tombK || {})) {
+        const t = Number(v) || 0;
+        meta.keyTs.set(k, Math.max(meta.keyTs.get(k) || 0, t));
+        meta.tombK.set(k, Math.max(meta.tombK.get(k) || 0, t));
+      }
+      for (const [k, mm] of Object.entries(m.tombM || {})) {
+        if (!mm || typeof mm !== 'object') continue;
+        let cur = meta.tombM.get(k);
+        if (!cur) { cur = new Map(); meta.tombM.set(k, cur); }
+        for (const [mem, v] of Object.entries(mm)) cur.set(mem, Math.max(cur.get(mem) || 0, Number(v) || 0));
+      }
+    },
+
+    /**
+     * 增量并入远端快照行（温实例远端同步 / 多实例收敛）：
+     * 远端独有 key/成员并入本地；kv/哈希整键冲突按 keyTs LWW（键删除时间也计入，删除事件可阻止旧数据复活）。
+     * 不清空本地数据（同步实现，与并发写无竞态）。返回并入的行数。
+     */
+    mergeRows(rows, remoteKeyTs = {}) {
+      let n = 0;
+      const now = Date.now();
+      const live = (exp) => !exp || exp > now;
+      const rts = (k) => Number(remoteKeyTs[k]) || 0;
+      const lts = (k) => Math.max(meta.keyTs.get(k) || 0, meta.tombK.get(k) || 0);
+
+      for (const r of rows.kv || []) {
+        if (!live(r.exp) || !shouldSnapshot(r.key)) continue;
+        if (rts(r.key) <= lts(r.key)) continue; // 本地更新或本地已删除（更晚）→ 不并入
+        const cur = data.get(r.key);
+        if (cur && cur.type !== 'kv' && cur.type !== 'counter') continue; // 类型冲突以本地为准
+        data.set(r.key, { type: 'kv', v: r.val, exp: r.exp ?? null });
+        meta.keyTs.set(r.key, rts(r.key));
+        n++;
+      }
+
+      /* hashes：整键 LWW（按 field 分组重组） */
+      const hashGroups = new Map();
+      for (const r of rows.hashes || []) {
+        if (!live(r.exp) || !shouldSnapshot(r.key)) continue;
+        let g = hashGroups.get(r.key);
+        if (!g) { g = { exp: r.exp ?? null, fields: {} }; hashGroups.set(r.key, g); }
+        g.fields[r.field] = r.val;
+      }
+      for (const [k, g] of hashGroups) {
+        if (rts(k) <= lts(k)) continue;
+        const cur = data.get(k);
+        if (cur && cur.type !== 'h') continue;
+        const fields = {};
+        for (const [f, val] of Object.entries(g.fields)) {
+          try { fields[f] = JSON.parse(val); } catch { fields[f] = val; }
+        }
+        data.set(k, { type: 'h', v: fields, exp: g.exp });
+        meta.keyTs.set(k, rts(k));
+        n++;
+      }
+
+      /* lists：追加远端独有成员（导出已字符串化，与本地原始值统一转字符串比较） */
+      const listGroups = new Map();
+      for (const r of rows.lists || []) {
+        if (!live(r.exp) || !shouldSnapshot(r.key)) continue;
+        let g = listGroups.get(r.key);
+        if (!g) { g = { exp: r.exp ?? null, items: [] }; listGroups.set(r.key, g); }
+        g.items[r.pos] = r.val;
+      }
+      for (const [k, g] of listGroups) {
+        const cur = data.get(k);
+        if (!cur || cur.type !== 'l') continue; // 本地无该 list 时不整键创建（列表以本地写入为准）
+        const norm = (x) => (typeof x === 'string' ? x : JSON.stringify(x));
+        const have = new Set(cur.v.map(norm));
+        for (const v of g.items) {
+          if (v === undefined || have.has(v)) continue;
+          cur.v.push(v);
+          have.add(v);
+          n++;
+        }
+      }
+
+      /* sets / zsets：成员并集（zset 分数取大）；远端成员若被本地墓碑屏蔽则不并入 */
+      const setGroups = new Map();
+      for (const r of rows.sets || []) {
+        if (!live(r.exp) || !shouldSnapshot(r.key)) continue;
+        let g = setGroups.get(r.key);
+        if (!g) { g = new Set(); setGroups.set(r.key, g); }
+        g.add(r.member);
+      }
+      for (const [k, g] of setGroups) {
+        const cur = data.get(k);
+        if (!cur || cur.type !== 's') continue;
+        const tm = meta.tombM.get(k);
+        for (const m of g) {
+          if (cur.v.has(m)) continue;
+          if (tm && tm.has(m) && tm.get(m) >= rts(k)) continue; // 本地删除晚于远端写入 → 不复活
+          cur.v.add(m);
+          n++;
+        }
+      }
+      const zsetGroups = new Map();
+      for (const r of rows.zsets || []) {
+        if (!live(r.exp) || !shouldSnapshot(r.key)) continue;
+        let g = zsetGroups.get(r.key);
+        if (!g) { g = new Map(); zsetGroups.set(r.key, g); }
+        const s = Number(r.score) || 0;
+        const prev = g.get(r.member);
+        if (prev === undefined || s > prev) g.set(r.member, s);
+      }
+      for (const [k, g] of zsetGroups) {
+        const cur = data.get(k);
+        if (!cur || cur.type !== 'z') continue;
+        const tm = meta.tombM.get(k);
+        for (const [m, s] of g) {
+          const prev = cur.v.get(m);
+          if (prev !== undefined) { if (s > prev) cur.v.set(m, s); continue; }
+          if (tm && tm.has(m) && tm.get(m) >= rts(k)) continue; // 本地删除晚于远端写入 → 不复活
+          cur.v.set(m, s);
+          n++;
+        }
+      }
+
+      return n;
     },
 
     /** 统计信息（供健康检查/调试） */
@@ -404,9 +559,11 @@ let _lastLocalWriteTs = Date.now();
 
 /**
  * 温实例远端同步（由请求路径低频触发，内部 60s 节流，不阻塞不抛错）：
- * 远端快照比本地最新写事件新时，全量 restore 收敛其他实例的写入。
- * 安全性：仅当远端更新时间晚于本实例最新本地写事件才覆盖——本实例的写入会在
- * 8s/1.5s 内上传至远端，故此时远端必然已包含本实例数据，restore 不会丢写。
+ * 将远端快照【增量合并】进本地内存——远端独有 key/成员并入（其他实例的新注册患者等），
+ * 冲突按键级时间戳 LWW，本地删除事件（墓碑）阻止旧数据复活。
+ * 旧版"远端更新才整库覆盖"策略有两大缺陷，均已废弃：
+ *   1) 本实例在远端快照后写过任何数据（登录日志/审计/限流）即永久跳过同步 → 永远看不到新患者；
+ *   2) 整库覆盖会丢掉同步窗口内的本地并发写。
  */
 async function maybeSyncRemote() {
   if (!blobSnapshot.enabled()) return;
@@ -418,11 +575,18 @@ async function maybeSyncRemote() {
     const payload = await blobSnapshot.download();
     if (!payload || !payload.data) return;
     const remoteTs = Date.parse(payload.updatedAt || '') || 0;
-    if (remoteTs <= _lastLocalWriteTs) return; // 本地不旧于远端，无需覆盖
     const db = await getDb();
-    await db.restore(payload.data);
-    _lastLocalWriteTs = remoteTs;
-    console.info('[storage] warm instance synced from Blob snapshot (updatedAt:', payload.updatedAt + ')');
+    if (typeof db.mergeRows !== 'function') return; // sqlite 驱动无多实例问题，不支持增量合并
+    const n = db.mergeRows(payload.data, (payload.meta && payload.meta.keyTs) || {});
+    // 远端墓碑并入本地（其他实例的删除事件在本实例生效，并随下次上传继续传播）
+    if (db._applyMergeMeta) {
+      db._applyMergeMeta({
+        tombK: (payload.meta && payload.meta.tombK) || {},
+        tombM: (payload.meta && payload.meta.tombM) || {}
+      });
+    }
+    _lastLocalWriteTs = Math.max(_lastLocalWriteTs, remoteTs);
+    if (n > 0) console.info('[storage] warm instance merged', n, 'rows from Blob snapshot (updatedAt:', payload.updatedAt + ')');
   } catch (e) {
     console.warn('[storage] remote sync failed:', (e && e.message) || e);
   } finally {
@@ -466,6 +630,8 @@ async function init() {
         const payload = await blobSnapshot.download();
         if (payload) {
           const n = store.restore(payload.data);
+          // 恢复合并元数据（键级时间戳/墓碑）：后续温实例增量合并与合并上传据此判断新旧
+          if (store._applyMergeMeta && payload.meta) store._applyMergeMeta(payload.meta);
           // 冷启动引导后以远端时间为本地基准，温实例同步据此判断是否需要再次收敛
           _lastLocalWriteTs = Date.parse(payload.updatedAt || '') || _lastLocalWriteTs;
           console.info('[storage] restored', n, 'rows from Blob snapshot (updatedAt:', payload.updatedAt + ')');
@@ -553,6 +719,10 @@ function resetForTest() {
   }
   _sqlitePath = null;
   try { fs.unlinkSync(SNAPSHOT_PATH); } catch { /* ignore */ }
+  // 重置温实例远端同步状态，保证测试确定性
+  _lastRemoteSyncAt = 0;
+  _syncingRemote = false;
+  _lastLocalWriteTs = Date.now();
 }
 
 module.exports = { getDb, mode, K, dateStr, setNxEx, withLock, memoryStore, maybeSyncRemote, resetForTest };

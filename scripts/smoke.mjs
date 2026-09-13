@@ -549,5 +549,93 @@ check('restore roundtrip set', (await dbx.sismember('test:rt:s1', 'm1')) === 1);
 check('restore roundtrip zset', (await dbx.zscore('test:rt:z1', 'm1')) === 1.5);
 await dbx.del('test:rt:k1', 'test:rt:h1', 'test:rt:l1', 'test:rt:s1', 'test:rt:z1');
 
+console.log('\n[28] 多实例快照合并（mergePayloads / mergeRows / 墓碑防复活）');
+const blobSnap = require(join(ROOT, 'server/_lib/blob-snapshot.js'));
+const emptyRows = () => ({ kv: [], hashes: [], lists: [], sets: [], zsets: [] });
+
+/* 场景1：旧实例（仅示例患者）上传，不得覆盖远端新注册患者（"计数2/列表1"根因回归） */
+{
+  const remote = {
+    data: {
+      ...emptyRows(),
+      kv: [
+        { key: 'patient:p_new', val: JSON.stringify({ id: 'p_new', name: '新患者' }), exp: null },
+        { key: 'patient:p_1009', val: JSON.stringify({ id: 'p_1009', name: '王小明' }), exp: null }
+      ],
+      zsets: [
+        { key: 'patient:index:doc:u_doc_gbmz', member: 'p_new', score: 100, exp: null },
+        { key: 'patient:index:doc:u_doc_gbmz', member: 'p_1009', score: 50, exp: null }
+      ]
+    },
+    meta: { keyTs: { 'patient:p_new': 200, 'patient:p_1009': 50 }, tombK: {}, tombM: {} }
+  };
+  const local = {
+    data: {
+      ...emptyRows(),
+      kv: [{ key: 'patient:p_1009', val: JSON.stringify({ id: 'p_1009', name: '王小明' }), exp: null }],
+      zsets: [{ key: 'patient:index:doc:u_doc_gbmz', member: 'p_1009', score: 50, exp: null }]
+    },
+    meta: { keyTs: { 'patient:p_1009': 100 }, tombK: {}, tombM: {} }
+  };
+  const m1 = blobSnap.mergePayloads(local, remote);
+  check('merge keeps remote-only new patient', m1.data.kv.some(r => r.key === 'patient:p_new'), m1.data.kv.map(r => r.key));
+  check('merge keeps local-newer sample patient', m1.data.kv.some(r => r.key === 'patient:p_1009' && JSON.parse(r.val).name === '王小明'));
+  check('merge zset union keeps both patients', m1.data.zsets.filter(r => r.key === 'patient:index:doc:u_doc_gbmz').length === 2, m1.data.zsets);
+  check('merge keyTs takes max', m1.meta.keyTs['patient:p_new'] === 200 && m1.meta.keyTs['patient:p_1009'] === 100, m1.meta.keyTs);
+}
+
+/* 场景2：墓碑阻止复活（本地已删除的键/成员不因远端旧数据复活） */
+{
+  const m2 = blobSnap.mergePayloads(
+    { data: emptyRows(), meta: { keyTs: {}, tombK: { 'patient:p_old': Date.now() }, tombM: {} } },
+    { data: { ...emptyRows(), kv: [{ key: 'patient:p_old', val: 'stale', exp: null }] }, meta: { keyTs: { 'patient:p_old': 100 }, tombK: {}, tombM: {} } }
+  );
+  check('key tombstone blocks resurrection', !m2.data.kv.some(r => r.key === 'patient:p_old'), m2.data.kv.map(r => r.key));
+  check('tombstone propagates in merged meta', !!m2.meta.tombK['patient:p_old'], m2.meta.tombK);
+
+  const m3 = blobSnap.mergePayloads(
+    { data: emptyRows(), meta: { keyTs: {}, tombK: {}, tombM: { 'followup:due:2026-01-01': { p_gone: Date.now() } } } },
+    { data: { ...emptyRows(), sets: [{ key: 'followup:due:2026-01-01', member: 'p_gone', exp: null }, { key: 'followup:due:2026-01-01', member: 'p_keep', exp: null }] }, meta: { keyTs: { 'followup:due:2026-01-01': 100 }, tombK: {}, tombM: {} } }
+  );
+  const members = m3.data.sets.filter(r => r.key === 'followup:due:2026-01-01').map(r => r.member);
+  check('member tombstone blocks remote-only member', !members.includes('p_gone') && members.includes('p_keep'), members);
+}
+
+/* 场景3：mergeRows 增量并入（模拟旧实例温同步收敛新注册患者，不再有"写过即跳过"缺陷） */
+{
+  const { memoryStore } = require(join(ROOT, 'server/_lib/storage.js'));
+  const stale = memoryStore(null); // 模拟缺少新患者的旧实例
+  await stale.zadd('patient:index:doc:u_doc_gbmz', 50, 'p_1009');
+  await stale.set('patient:p_1009', JSON.stringify({ id: 'p_1009', name: '王小明' }));
+
+  const remoteRows = {
+    ...emptyRows(),
+    kv: [{ key: 'patient:p_new', val: JSON.stringify({ id: 'p_new', name: '新患者' }), exp: null }],
+    zsets: [
+      { key: 'patient:index:doc:u_doc_gbmz', member: 'p_new', score: Date.now(), exp: null },
+      { key: 'patient:index:doc:u_doc_gbmz', member: 'p_1009', score: 50, exp: null }
+    ]
+  };
+  const n = stale.mergeRows(remoteRows, { 'patient:p_new': Date.now(), 'patient:index:doc:u_doc_gbmz': Date.now() });
+  const pNew = await stale.get('patient:p_new');
+  check('mergeRows imports remote-only patient', n >= 2 && !!pNew && JSON.parse(pNew).name === '新患者', { n, pNew });
+  check('mergeRows zset union (doctor sees 2)', (await stale.zcard('patient:index:doc:u_doc_gbmz')) === 2);
+
+  /* 本地删除（墓碑更新）不被远端旧数据复活 */
+  await stale.set('patient:p_gone', 'x');
+  await stale.del('patient:p_gone');
+  const reN = stale.mergeRows({ ...emptyRows(), kv: [{ key: 'patient:p_gone', val: 'stale', exp: null }] }, { 'patient:p_gone': 1 });
+  check('mergeRows tombstone blocks stale kv', reN === 0 && (await stale.get('patient:p_gone')) === null, { reN });
+}
+
+/* 场景4：list 成员并集去重（不同实例各自 lpush 不丢失） */
+{
+  const m4 = blobSnap.mergePayloads(
+    { data: { ...emptyRows(), lists: [{ key: 'record:diet:p_1', pos: 0, val: '{"a":1}', exp: null }] }, meta: {} },
+    { data: { ...emptyRows(), lists: [{ key: 'record:diet:p_1', pos: 0, val: '{"b":2}', exp: null }] }, meta: {} }
+  );
+  check('list union dedupe keeps both', m4.data.lists.length === 2, m4.data.lists);
+}
+
 console.log(`\n========== 冒烟测试结果: ${passed} 通过 / ${failed} 失败 ==========`);
 process.exit(failed ? 1 : 0);

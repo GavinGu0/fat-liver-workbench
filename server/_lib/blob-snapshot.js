@@ -18,6 +18,8 @@
 const SNAPSHOT_KEY = 'storage/snapshot.json';
 const DEBOUNCE_MS = 8000;
 const FORCE_DEBOUNCE_MS = 1500;
+/** 墓碑（删除记录）保留时长：超过后允许远端旧数据复活（正常在分钟级收敛，24h 足够安全） */
+const TOMBSTONE_TTL_MS = 24 * 3600 * 1000;
 
 let _timer = null;
 let _uploading = false;
@@ -38,26 +40,214 @@ function enabled() {
   return process.env.VERCEL === '1' || process.env.STORAGE_BLOB_SNAPSHOT === 'true';
 }
 
+/* ==================== 多实例快照合并 ==================== */
+
+function emptyMeta() {
+  return { keyTs: {}, tombK: {}, tombM: {} };
+}
+
+function normMeta(meta) {
+  return {
+    keyTs: (meta && meta.keyTs) || {},
+    tombK: (meta && meta.tombK) || {},
+    tombM: (meta && meta.tombM) || {}
+  };
+}
+
+/** 行式 rows → 索引（kv/hash 整键，list 有序成员，set/zset 成员集合），便于按 key 合并 */
+function indexRows(rows) {
+  const idx = { kv: new Map(), hashes: new Map(), lists: new Map(), sets: new Map(), zsets: new Map() };
+  for (const r of rows.kv || []) if (!idx.kv.has(r.key)) idx.kv.set(r.key, r);
+  for (const r of rows.hashes || []) {
+    let g = idx.hashes.get(r.key);
+    if (!g) { g = { key: r.key, exp: r.exp ?? null, fields: {} }; idx.hashes.set(r.key, g); }
+    g.fields[r.field] = r.val;
+  }
+  for (const r of rows.lists || []) {
+    let g = idx.lists.get(r.key);
+    if (!g) { g = { key: r.key, exp: r.exp ?? null, items: [] }; idx.lists.set(r.key, g); }
+    g.items[r.pos] = r.val;
+  }
+  for (const r of rows.sets || []) {
+    let g = idx.sets.get(r.key);
+    if (!g) { g = { key: r.key, exp: r.exp ?? null, members: new Set() }; idx.sets.set(r.key, g); }
+    g.members.add(r.member);
+  }
+  for (const r of rows.zsets || []) {
+    let g = idx.zsets.get(r.key);
+    if (!g) { g = { key: r.key, exp: r.exp ?? null, members: new Map() }; idx.zsets.set(r.key, g); }
+    const s = Number(r.score) || 0;
+    const prev = g.members.get(r.member);
+    if (prev === undefined || s > prev) g.members.set(r.member, s);
+  }
+  return idx;
+}
+
+/**
+ * 合并两份快照载荷（多实例并发上传互相覆盖的根因修复）：
+ * - kv / hashes：整键按 keyTs LWW（键删除时间也计入 keyTs，删除即一次"更新"）
+ * - lists：本地顺序优先，追加远端独有成员（按成员字符串去重）
+ * - sets / zsets：成员并集（zset 分数取较大值）；成员级墓碑屏蔽远端独有成员复活
+ * - 墓碑（tombK/tombM）：并集取最大时间戳，超 TTL 清理；被墓碑屏蔽的独有键不进合并结果
+ * 返回 { data, meta }，meta 含合并后的 keyTs/tombK/tombM（调用方应回写本地以保持收敛基准）。
+ */
+function mergePayloads(local, remote) {
+  const L = indexRows((local && local.data) || {});
+  const R = remote && remote.data ? indexRows(remote.data) : null;
+  const lm = normMeta(local && local.meta);
+  const rm = normMeta(remote && remote.meta);
+  const now = Date.now();
+
+  /* 元数据合并：keyTs 取最大；墓碑并集取最大 + TTL 清理 */
+  const keyTs = { ...rm.keyTs };
+  for (const [k, v] of Object.entries(lm.keyTs)) keyTs[k] = Math.max(keyTs[k] || 0, Number(v) || 0);
+  const tombK = {};
+  for (const src of [rm.tombK, lm.tombK]) {
+    for (const [k, v] of Object.entries(src)) tombK[k] = Math.max(tombK[k] || 0, Number(v) || 0);
+  }
+  const tombM = {};
+  for (const src of [rm.tombM, lm.tombM]) {
+    for (const [k, mm] of Object.entries(src)) {
+      if (!mm || typeof mm !== 'object') continue;
+      tombM[k] = tombM[k] || {};
+      for (const [m, v] of Object.entries(mm)) tombM[k][m] = Math.max(tombM[k][m] || 0, Number(v) || 0);
+    }
+  }
+
+  const data = { kv: [], hashes: [], lists: [], sets: [], zsets: [] };
+
+  /* kv：整键 LWW；独有键被墓碑屏蔽时不输出 */
+  for (const k of new Set([...L.kv.keys(), ...(R ? R.kv.keys() : [])])) {
+    const a = L.kv.get(k), b = R && R.kv.get(k);
+    const tsA = lm.keyTs[k] || 0, tsB = rm.keyTs[k] || 0, tomb = tombK[k] || 0;
+    let pick = null;
+    if (a && b) pick = tsB > tsA ? b : a;
+    else if (a) pick = tomb > tsA ? null : a;
+    else pick = tomb > tsB ? null : b;
+    if (pick) data.kv.push({ key: k, val: pick.val, exp: pick.exp ?? null });
+  }
+
+  /* hashes：整键 LWW（field 级冲突在演示场景可忽略） */
+  for (const k of new Set([...L.hashes.keys(), ...(R ? R.hashes.keys() : [])])) {
+    const a = L.hashes.get(k), b = R && R.hashes.get(k);
+    const tsA = lm.keyTs[k] || 0, tsB = rm.keyTs[k] || 0, tomb = tombK[k] || 0;
+    let pick = a && b ? (tsB > tsA ? b : a) : (a || b);
+    if (pick) {
+      const ts = pick === b ? tsB : tsA;
+      if (tomb > ts) pick = null;
+    }
+    if (pick) for (const [f, v] of Object.entries(pick.fields)) data.hashes.push({ key: k, field: f, val: v, exp: pick.exp ?? null });
+  }
+
+  /* lists：本地顺序优先 + 远端独有成员追加（导出格式已字符串化，按成员字符串去重） */
+  for (const k of new Set([...L.lists.keys(), ...(R ? R.lists.keys() : [])])) {
+    const a = L.lists.get(k), b = R && R.lists.get(k);
+    if (!a && !b) continue;
+    const exp = (a || b).exp ?? null;
+    if (!a) {
+      // 本地整键不存在：若本地删除时间（墓碑）晚于远端写入 → 阻止复活
+      if ((tombK[k] || 0) > (rm.keyTs[k] || 0)) continue;
+    }
+    const items = [];
+    const seen = new Set();
+    for (const g of [a, b]) {
+      if (!g) continue;
+      for (const v of g.items) {
+        if (v === undefined || seen.has(v)) continue;
+        seen.add(v);
+        items.push(v);
+      }
+    }
+    items.forEach((v, i) => data.lists.push({ key: k, pos: i, val: v, exp }));
+  }
+
+  /* sets：成员并集；远端独有成员被成员墓碑屏蔽（本地已删除）时不并入 */
+  for (const k of new Set([...L.sets.keys(), ...(R ? R.sets.keys() : [])])) {
+    const a = L.sets.get(k), b = R && R.sets.get(k);
+    if (!a && !b) continue;
+    const exp = (a || b).exp ?? null;
+    if (!a && (tombK[k] || 0) > (rm.keyTs[k] || 0)) continue; // 本地整键已删除且晚于远端写入
+    const tm = tombM[k] || {};
+    if (a) for (const m of a.members) data.sets.push({ key: k, member: m, exp });
+    if (b) for (const m of b.members) {
+      if (a && a.members.has(m)) continue;
+      if (tm[m] && !a) continue; // 本地已删除该成员（墓碑更新）→ 阻止远端复活
+      data.sets.push({ key: k, member: m, exp });
+    }
+  }
+
+  /* zsets：成员并集（分数取大）；成员墓碑规则同 sets */
+  for (const k of new Set([...L.zsets.keys(), ...(R ? R.zsets.keys() : [])])) {
+    const a = L.zsets.get(k), b = R && R.zsets.get(k);
+    if (!a && !b) continue;
+    const exp = (a || b).exp ?? null;
+    if (!a && (tombK[k] || 0) > (rm.keyTs[k] || 0)) continue; // 本地整键已删除且晚于远端写入
+    const tm = tombM[k] || {};
+    const merged = new Map();
+    if (a) for (const [m, s] of a.members) merged.set(m, s);
+    if (b) {
+      for (const [m, s] of b.members) {
+        if (merged.has(m)) { merged.set(m, Math.max(merged.get(m), s)); continue; }
+        if (tm[m] && !a) continue; // 本地已删除该成员 → 阻止远端复活
+        merged.set(m, s);
+      }
+    }
+    for (const [m, s] of merged) data.zsets.push({ key: k, member: m, score: s, exp });
+  }
+
+  /* 墓碑 TTL 清理（收敛完成后释放，防止元数据无界增长） */
+  const cutoff = now - TOMBSTONE_TTL_MS;
+  for (const k of Object.keys(tombK)) if (tombK[k] < cutoff) delete tombK[k];
+  for (const k of Object.keys(tombM)) {
+    for (const m of Object.keys(tombM[k])) if (tombM[k][m] < cutoff) delete tombM[k][m];
+    if (!Object.keys(tombM[k]).length) delete tombM[k];
+  }
+
+  return { data, meta: { keyTs, tombK, tombM } };
+}
+
 async function putSnapshot(body) {
   const { put } = await import('@vercel/blob');
   // 私有 store 需显式 access:'private'（服务端校验必传）；固定路径覆盖
   await put(SNAPSHOT_KEY, body, { access: 'private', contentType: 'application/json', addRandomSuffix: false });
 }
 
-/** 强制上传（无视节流；供 Cron 每日兜底调用） */
+/** 拉取远端快照（不吞错误：供 uploadNow 区分"无快照"与"读取失败"，失败时禁止上传防覆盖） */
+async function fetchRemote() {
+  const { get } = await import('@vercel/blob');
+  const res = await get(SNAPSHOT_KEY);
+  const payload = JSON.parse(await res.text());
+  if (payload && payload.data && Array.isArray(payload.data.kv)) return payload;
+  return null;
+}
+
+/** 强制上传（无视节流；供 Cron 每日兜底调用）。
+ *  上传前先合并远端快照：旧实例（缺少其他实例新写入，如新注册患者）直接全量覆盖上传
+ *  会把远端新数据抹掉——这是多实例"计数 2 / 列表 1"与患者永久消失的根因。 */
 async function uploadNow(db) {
   if (!enabled()) return { skipped: true, reason: 'disabled' };
   if (_uploading) return { skipped: true, reason: 'in-flight' };
   _uploading = true;
   try {
-    const data = db._export();
-    const body = JSON.stringify({ updatedAt: new Date().toISOString(), data });
+    let remote = null;
+    try {
+      remote = await fetchRemote();
+    } catch (e) {
+      // 远端可读但读取失败 → 放弃本次上传，防止用本地不完整状态覆盖云端
+      console.warn('[blob-snapshot] skip upload, remote unreadable:', e.message);
+      return { skipped: true, reason: 'remote-unreadable' };
+    }
+    const local = { data: db._export(), meta: db._mergeMeta ? db._mergeMeta() : emptyMeta() };
+    const merged = mergePayloads(local, remote);
+    const body = JSON.stringify({ updatedAt: new Date().toISOString(), ...merged });
     await putSnapshot(body);
+    // 合并元数据回写本地：墓碑/时间戳基准收敛，避免重复并入与无界增长
+    if (db._applyMergeMeta) db._applyMergeMeta(merged.meta);
     _lastOkAt = new Date().toISOString();
     _lastBytes = Buffer.byteLength(body);
     _lastOkTs = Date.now();
     _lastError = null;
-    console.info('[blob-snapshot] uploaded', _lastBytes, 'bytes');
+    console.info('[blob-snapshot] uploaded', _lastBytes, 'bytes (merged with remote)');
     return { ok: true, bytes: _lastBytes };
   } catch (e) {
     _lastError = e.message;
@@ -97,11 +287,7 @@ function scheduleUpload(db, opts = {}) {
 async function download() {
   if (!enabled()) return null;
   try {
-    const { get } = await import('@vercel/blob');
-    const res = await get(SNAPSHOT_KEY);
-    const payload = JSON.parse(await res.text());
-    if (payload && payload.data && Array.isArray(payload.data.kv)) return payload;
-    return null;
+    return await fetchRemote();
   } catch (e) {
     if (/not found/i.test(String((e && e.message) || e))) {
       console.debug('[blob-snapshot] no remote snapshot yet');
@@ -131,4 +317,4 @@ function resetForTest() {
   _lastOkTs = 0;
 }
 
-module.exports = { enabled, uploadNow, scheduleUpload, download, status, resetForTest };
+module.exports = { enabled, uploadNow, scheduleUpload, download, mergePayloads, emptyMeta, status, resetForTest };
