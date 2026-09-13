@@ -39,17 +39,8 @@ function enabled() {
 
 async function putSnapshot(body) {
   const { put } = await import('@vercel/blob');
-  try {
-    await put(SNAPSHOT_KEY, body, { access: 'private', contentType: 'application/json', addRandomSuffix: false });
-  } catch (e) {
-    // 旧版 SDK 不支持 private：降级 public（URL 含不可枚举随机段）
-    if (/access/i.test(String(e && e.message))) {
-      console.warn('[blob-snapshot] private access unsupported, falling back to public');
-      await put(SNAPSHOT_KEY, body, { access: 'public', contentType: 'application/json', addRandomSuffix: false });
-    } else {
-      throw e;
-    }
-  }
+  // @vercel/blob 2.x：访问模式由 store 类型决定（public/private），固定路径覆盖
+  await put(SNAPSHOT_KEY, body, { contentType: 'application/json', addRandomSuffix: false });
 }
 
 /** 强制上传（无视节流；供 Cron 每日兜底调用） */

@@ -11,7 +11,8 @@ async function putBlob(pathname, body, contentType) {
   if (!blobConfigured()) return null;
   try {
     const { put } = await import('@vercel/blob');
-    const res = await put(pathname, body, { access: 'public', contentType });
+    // @vercel/blob 2.x：访问模式由 store 类型决定（public/private），不再传 access 参数
+    const res = await put(pathname, body, { contentType });
     return res && res.url ? res.url : null;
   } catch (e) {
     console.error('[blob] put failed:', e.message);
