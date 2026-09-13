@@ -3,7 +3,7 @@
  * 演示数据播种（幂等）：确保一键部署后系统开箱可用
  * - 演示账号：医生 GBMZ / 护士 HULI01 / 患者 13800000001，密码均 123456
  * - 9 名模拟患者 + 近 30 天填报数据 + 消息/随访/MDT 样例
- * - Redis 模式下仅播种一次；内存模式每个实例播种一次
+ * - 内存模式：每个实例首次请求时播种一次（幂等，flag 守护）
  */
 const { randomUUID } = require('node:crypto');
 const { getDb, K, dateStr, setNxEx, withLock } = require('./storage');

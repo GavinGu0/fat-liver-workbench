@@ -2,7 +2,7 @@
 
 连接**患者、医生、护士**的数字化慢病管理平台：患者院外填报（饮食/运动/指标）→ 医生工作台实时可见 → 护士宣教/指导/标准化评估 → MDT 多学科会诊闭环。
 
-**架构**：Vercel Serverless Functions（Node.js 22）+ Vue 3 双前端 + **无数据库**存储（Upstash Redis / Vercel KV + Vercel Blob + Edge Config，未配置时自动降级内存演示模式）。
+**架构**：Vercel Serverless Functions（Node.js 22）+ Vue 3 双前端 + **无外部依赖**纯内存存储（进程内存 + Vercel Blob/Edge Config 可选）。
 
 ---
 
@@ -64,17 +64,16 @@ vercel --prod   # 生产部署
 > 未配置任何环境变量时即**演示模式**：内存存储 + 自动播种模拟数据（重启后重置）。
 > 患者**注册**后自动建立健康档案并归入 GBMZ 医生名下（演示默认分配）。
 
-## 🗄️ 开启持久化（生产建议）
+## 🗄️ 可选增强组件
 
-在 Vercel 项目 → **Storage** 标签页：
+在 Vercel 项目 → **Storage** 标签页（全部可选，不配置时自动降级）：
 
-| 组件 | 操作 | 自动注入的环境变量 |
-|---|---|---|
-| Upstash Redis（替代已停售的 Vercel KV） | Create Database → Upstash Redis | `KV_REST_API_URL` `KV_REST_API_TOKEN` |
-| Vercel Blob | Create Store → Blob | `BLOB_READ_WRITE_TOKEN` |
-| Edge Config（可选） | Create Store → Edge Config | `EDGE_CONFIG` |
+| 组件 | 操作 | 自动注入的环境变量 | 用途 |
+|---|---|---|---|
+| Vercel Blob | Create Store → Blob | `BLOB_READ_WRITE_TOKEN` | 饮食照片/评估报告归档 |
+| Edge Config | Create Store → Edge Config | `EDGE_CONFIG` | 评估模板等全局只读配置 |
 
-再手动添加一个环境变量：
+手动环境变量：
 
 | 变量 | 必要性 | 说明 |
 |---|---|---|
@@ -83,7 +82,10 @@ vercel --prod   # 生产部署
 | `SMS_KEY` | 可选 | 未配置时验证码以演示模式直接返回 |
 | `ENABLE_API_DOCS` | 可选 | `true` 在生产环境开放 /api/docs |
 
-重新 **Deploy** 后，`/api/health` 中 `storage: "redis"`、`blob: true` 即为持久化就绪。
+> **关于存储**：本项目采用纯内存存储（`server/_lib/storage.js`），零外部依赖。
+> 单机本地运行时数据实时一致；Vercel Serverless 多实例场景下，各实例内存相互隔离，
+> 实例回收后数据重置为演示种子——这是 Serverless 平台的物理限制，不是 Bug。
+> 适合演示、开发、PoC 验证；如需多用户持久化运行，建议部署到长驻 Node 服务（VPS/Docker）。
 
 ## ⏰ 定时任务（Vercel Cron）
 
@@ -119,8 +121,8 @@ vercel dev             # 本地完整运行（含 API），访问 http://localho
 
 ## 📌 实现说明（与文档差异点）
 
-1. **Upstash Redis**：Vercel KV 产品线已迁移至 Storage Marketplace（Upstash），本项目的 `@upstash/redis` 使用的 `KV_REST_API_URL/TOKEN` 变量与 Vercel KV 完全兼容，Storage 添加 Upstash 后自动注入。
+1. **纯内存存储**：移除了 Redis/KV 依赖，`server/_lib/storage.js` 提供完整的内存 KV/Hash/List/Set/SortedSet 实现 + /tmp 快照恢复机制。业务层接口不变。
 2. **无 Express**：技术方案允许"原生 Vercel handler"，已采用更轻的原生方案（统一 `defineHandler` 编排：requestId/CORS/鉴权/限流/幂等/日志/错误兜底），冷启动更小。
 3. **患者端**：PRD 允许"uni-app/H5"，采用 Vue3 + Vite 轻量 H5（与 admin 同栈，无需额外构建链）。
 4. **医生检验录入**：为满足 PRD"趋势分析Tab 含肝功能指标曲线"，新增 `POST /api/patients/:id/labs`（ALT/AST/GGT/甘油三酯），仅主管医生可录入。
-5. **演示模式降级**：所有存储依赖均可缺席运行（内存兜底），保证"一键部署即可体验"；接入 Storage 后无需改任何代码。
+5. **快照机制**：每次写操作 debounce 500ms 写入 `/tmp/flwb-snapshot.json`，同实例冷启动可恢复最近状态；`lock:` / `idem:` / `sms:` 等临时键跳过持久化。

@@ -73,9 +73,9 @@
       </el-header>
       <el-main class="main">
         <el-alert
-          v-if="memoryStorage" type="warning" :closable="false" style="margin-bottom:12px"
-          title="存储告警：当前服务运行在实例内存（演示模式），未接入 Redis/KV"
-          description="多实例部署下数据不共享：患者建档/注册后可能出现列表时而可见、时而不可见，账号登录异常，实例回收后数据丢失。请在 Vercel 项目环境变量配置 Upstash Redis（UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN）后重新部署。"
+          v-if="demoMode" type="info" :closable="false" style="margin-bottom:12px"
+          title="演示模式：数据存于实例内存"
+          description="本项目为纯内存存储（零外部依赖），服务重启后数据将恢复为演示种子数据。单机本地运行时数据实时一致；Vercel 多实例部署下，各实例内存相互隔离，同一操作可能在不同实例上看到不同结果（属于预期行为）。"
           show-icon
         />
         <router-view />
@@ -93,7 +93,7 @@ import { api } from '../api';
 const auth = useAuthStore();
 const route = useRoute();
 const unread = ref(0);
-const memoryStorage = ref(false);
+const demoMode = ref(false);
 let timer = null;
 
 async function loadUnread() {
@@ -103,11 +103,11 @@ async function loadUnread() {
   } catch { /* 静默：未读数刷新失败不打扰使用 */ }
 }
 
-/* 存储模式自检：生产构建下若后端为实例内存存储，顶部展示告警（数据不跨实例、不持久） */
+/* 演示模式自检：生产构建下提示数据重置特性 */
 async function checkStorageMode() {
   try {
     const h = await api.health();
-    if (import.meta.env.PROD && h && h.storage === 'memory') memoryStorage.value = true;
+    if (import.meta.env.PROD && h && h.storage === 'memory') demoMode.value = true;
   } catch { /* 静默：健康检查失败不阻塞界面 */ }
 }
 

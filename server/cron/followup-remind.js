@@ -145,13 +145,13 @@ module.exports = defineHandler({
           vitalsCount: Number(await db.zcard(K.vitals(pid))) || 0
         });
       }
-      snapshot.totals = { patients: snapshot.patients.length, storage: 'kv' };
+      snapshot.totals = { patients: snapshot.patients.length, storage: 'memory' };
       if (blobConfigured()) {
         const url = await putJson(`backups/${today}.json`, snapshot);
         result.backup = { type: 'blob', url };
       } else {
         await db.set(K.backup(today), JSON.stringify(snapshot), { ex: 30 * DAY });
-        result.backup = { type: 'kv', ttlDays: 30 };
+        result.backup = { type: 'memory', ttlDays: 30 };
       }
     } catch (e) {
       logger.warn('cron.backup.fail', { message: e.message });
