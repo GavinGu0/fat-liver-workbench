@@ -5,7 +5,7 @@
  */
 const { randomUUID } = require('node:crypto');
 const { ApiError } = require('./response');
-const { getDb, K, dateStr, withLock } = require('./storage');
+const { getDb, K, dateStr, withLock, forceSyncRemote } = require('./storage');
 const { putJson, blobConfigured } = require('./blob');
 const logger = require('./logger');
 
@@ -27,7 +27,12 @@ async function getPatient(patientId) {
  */
 async function updatePatient(patientId, mutator, expectVersion) {
   return withLock(`patient:${patientId}`, 5, async (db) => {
-    const raw = await db.get(K.patient(patientId));
+    let raw = await db.get(K.patient(patientId));
+    if (!raw) {
+      /* 多实例读穿透：本实例未见档案时强制收敛远端快照后重试一次（注册后立即填报场景） */
+      await forceSyncRemote();
+      raw = await db.get(K.patient(patientId));
+    }
     if (!raw) throw new ApiError(404, 40400, '患者不存在');
     const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const prevUserId = p.userId || null;

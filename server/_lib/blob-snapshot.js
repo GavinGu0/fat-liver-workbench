@@ -217,13 +217,18 @@ async function putSnapshot(body) {
 async function fetchRemote() {
   try {
     const { get } = await import('@vercel/blob');
-    // @vercel/blob 2.8：get(pathname) 的 options 为必传（含 access；token 自动从环境解析）
-    const res = await get(SNAPSHOT_KEY, { access: 'private' });
-    const payload = JSON.parse(await res.text());
+    // @vercel/blob 2.8：get(pathname) 返回 { statusCode, stream, blob }；404 返回 null
+    // useCache:false 旁路 CDN 缓存——快照是强一致恢复点，覆盖写后必须立即可读到最新版本
+    const res = await get(SNAPSHOT_KEY, { access: 'private', useCache: false });
+    if (!res || res.statusCode === 404) return null; // 仓库中尚无快照 ≠ 读取失败，置 null 允许首传
+    const text = typeof res.text === 'function'
+      ? await res.text()
+      : await new Response(res.stream).text();
+    const payload = JSON.parse(text);
     if (payload && payload.data && Array.isArray(payload.data.kv)) return payload;
     return null;
   } catch (e) {
-    /* 仓库中尚无快照 ≠ 读取失败：置 null 让 uploadNow 正常首传；其余错误抛出防覆盖 */
+    /* 兼容旧 SDK 的 not found 语义：空仓库允许首传；其余错误抛出防覆盖 */
     if (/not found/i.test(String((e && e.message) || e))) return null;
     throw e;
   }
