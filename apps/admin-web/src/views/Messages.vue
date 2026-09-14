@@ -11,6 +11,26 @@
       </div>
     </div>
 
+    <!-- 筛选：已读/未读 + 日期 -->
+    <div class="filters">
+      <el-radio-group v-model="readFilter" size="small" @change="reload">
+        <el-radio-button value="all">全部</el-radio-button>
+        <el-radio-button value="unread">未读</el-radio-button>
+        <el-radio-button value="read">已读</el-radio-button>
+      </el-radio-group>
+      <el-date-picker
+        v-model="dateFilter"
+        type="date"
+        size="small"
+        placeholder="按日期查看"
+        value-format="YYYY-MM-DD"
+        :clearable="true"
+        style="width:160px"
+        @change="reload"
+      />
+      <span v-if="dateFilter || readFilter !== 'all'" class="filter-reset" @click="resetFilters">清除筛选</span>
+    </div>
+
     <el-table :data="items" v-loading="loading" @row-click="open" row-class-name="msg-row" empty-text="暂无消息">
       <el-table-column width="36">
         <template #default="{ row }">
@@ -32,6 +52,10 @@
         <template #default="{ row }">{{ fmtTime(row.ts) }}</template>
       </el-table-column>
     </el-table>
+
+    <div v-if="nextBefore" class="load-more">
+      <el-button size="small" :loading="loadingMore" @click="loadMore">加载更早的消息</el-button>
+    </div>
 
     <el-dialog v-model="visible" :title="current && current.title" width="560px">
       <p class="dialog-meta">
@@ -57,7 +81,11 @@ import DOMPurify from 'dompurify';
 const router = useRouter();
 const items = ref([]);
 const unread = ref(0);
+const nextBefore = ref(null);
+const readFilter = ref('all');
+const dateFilter = ref('');
 const loading = ref(false);
+const loadingMore = ref(false);
 const visible = ref(false);
 const current = ref(null);
 const html = computed(() => (current.value ? DOMPurify.sanitize(current.value.content || '') : ''));
@@ -72,15 +100,49 @@ const TYPE_LABELS = {
 };
 const typeLabel = (t) => TYPE_LABELS[t] || '通知';
 
+function buildParams(before) {
+  const p = { limit: 50 };
+  if (readFilter.value !== 'all') p.read = readFilter.value;
+  if (dateFilter.value) p.date = dateFilter.value;
+  if (before) p.before = before;
+  return p;
+}
+
 async function load() {
   loading.value = true;
   try {
-    const d = await api.messages();
+    const d = await api.messages(buildParams(0));
     items.value = d.items || [];
     unread.value = d.unread || 0;
+    nextBefore.value = d.nextBefore || null;
   } finally {
     loading.value = false;
   }
+}
+
+/** 筛选条件变化：重置列表 */
+async function reload() {
+  nextBefore.value = null;
+  await load();
+}
+
+/** 分页加载更早的消息（追加到列表尾部） */
+async function loadMore() {
+  if (!nextBefore.value) return;
+  loadingMore.value = true;
+  try {
+    const d = await api.messages(buildParams(nextBefore.value));
+    items.value = items.value.concat(d.items || []);
+    nextBefore.value = d.nextBefore || null;
+  } finally {
+    loadingMore.value = false;
+  }
+}
+
+function resetFilters() {
+  readFilter.value = 'all';
+  dateFilter.value = '';
+  reload();
 }
 
 async function open(m) {
@@ -114,10 +176,13 @@ onMounted(load);
 .toolbar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
 .page-title { margin: 0; font-size: 16px; }
 .page-sub { margin: 4px 0 0; font-size: 12px; color: #86909c; }
+.filters { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.filter-reset { font-size: 12px; color: var(--el-color-primary, #409eff); cursor: pointer; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #e5e6eb; }
 .dot.on { background: #f53f3f; }
 .row-title-unread { font-weight: 600; }
 .msg-row { cursor: pointer; }
 .dialog-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #86909c; margin: 0 0 12px; }
 .msg-html :deep(p) { margin: 0 0 8px; line-height: 1.7; }
+.load-more { display: flex; justify-content: center; padding: 12px 0 2px; }
 </style>

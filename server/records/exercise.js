@@ -51,6 +51,9 @@ module.exports = defineHandler({
       link: `/patients/${user.patientId}`
     });
 
+    /* 患者填报是关键写事件：强制上传快照（1.5s 内），医生端实例 60s 内收敛可见 */
+    try { require('../_lib/blob-snapshot').scheduleUpload(db, { force: true }); } catch { /* ignore */ }
+
     return { id: record.id, ts: record.ts };
   }
 });

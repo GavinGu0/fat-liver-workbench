@@ -88,8 +88,13 @@ async function markMsgRead(userId, mid) {
   });
   if (changed) {
     await db.del(K.msg(userId));
-    for (const it of items.reverse()) await db.rpush(K.msg(userId), it); // lrange 为新→旧，rpush 还原顺序
+    // lrange 返回新→旧，rpush 按原序回写保持新→旧不变（勿反转，否则列表顺序翻转）
+    for (const it of items) await db.rpush(K.msg(userId), it);
     await db.ltrim(K.msg(userId), 0, 199);
+    // 同步扣减未读计数：以剩余未读为准，避免计数漂移
+    let unread = 0;
+    for (const it of items) { try { if (!JSON.parse(it).read) unread++; } catch { /* ignore */ } }
+    await db.set(K.msgUnread(userId), unread);
   }
   return changed;
 }
@@ -102,7 +107,8 @@ async function markAllMsgsRead(userId) {
     catch { return typeof x === 'string' ? x : JSON.stringify(x); }
   });
   await db.del(K.msg(userId), K.msgUnread(userId));
-  for (const it of items.reverse()) await db.rpush(K.msg(userId), it);
+  // 同 markMsgRead：保持新→旧顺序
+  for (const it of items) await db.rpush(K.msg(userId), it);
   await db.ltrim(K.msg(userId), 0, 199);
 }
 

@@ -725,4 +725,37 @@ function resetForTest() {
   _lastLocalWriteTs = Date.now();
 }
 
-module.exports = { getDb, mode, K, dateStr, setNxEx, withLock, memoryStore, maybeSyncRemote, resetForTest };
+/**
+ * 强制远端收敛（无视 60s 节流，带重入保护，不抛错）：
+ * 登录/注册等关键读路径的兜底——实例内存缺少刚在其他实例注册的用户/患者数据时，
+ * 先同步远端快照再判定，避免把"实例不收敛"误判成"尚未注册/账号不存在"。
+ * 返回并入的行数（0 表示无远端数据或未启用）。
+ */
+async function forceSyncRemote() {
+  if (!blobSnapshot.enabled() || _syncingRemote) return 0;
+  _syncingRemote = true;
+  try {
+    const payload = await blobSnapshot.download();
+    if (!payload || !payload.data) return 0;
+    const db = await getDb();
+    if (typeof db.mergeRows !== 'function') return 0;
+    const n = db.mergeRows(payload.data, (payload.meta && payload.meta.keyTs) || {});
+    if (db._applyMergeMeta) {
+      db._applyMergeMeta({
+        tombK: (payload.meta && payload.meta.tombK) || {},
+        tombM: (payload.meta && payload.meta.tombM) || {}
+      });
+    }
+    _lastRemoteSyncAt = Date.now();
+    const remoteTs = Date.parse(payload.updatedAt || '') || 0;
+    _lastLocalWriteTs = Math.max(_lastLocalWriteTs, remoteTs);
+    if (n > 0) console.info('[storage] force-synced', n, 'rows from Blob snapshot (updatedAt:', payload.updatedAt + ')');
+    return n;
+  } catch {
+    return 0;
+  } finally {
+    _syncingRemote = false;
+  }
+}
+
+module.exports = { getDb, mode, K, dateStr, setNxEx, withLock, memoryStore, maybeSyncRemote, forceSyncRemote, resetForTest };

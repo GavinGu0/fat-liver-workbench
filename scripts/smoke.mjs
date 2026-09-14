@@ -238,6 +238,50 @@ if (firstUnread) {
 const msgs2 = await call('server/messages/read-all.js', { ...patAuth, method: 'POST' });
 check('read all', msgs2.code === 0, msgs2);
 
+/* 消息中心端点级筛选（read/date/limit/before，走真实 URL 查询串） */
+const msgToday = await call('server/messages/index.js', { ...docAuth, url: '/api/messages?read=read&limit=200' });
+check('messages read filter', msgToday.code === 0 && msgToday.data.items.length >= 1 && msgToday.data.items.every(m => m.read), msgToday.data?.items?.length);
+const msgDate = await call('server/messages/index.js', { ...docAuth, url: `/api/messages?date=${today}&limit=200` });
+check('messages date filter (today)', msgDate.code === 0 && msgDate.data.items.every(m => m.ts > Date.now() - 86400000), msgDate.data?.items?.length);
+const msgEmptyDay = await call('server/messages/index.js', { ...docAuth, url: '/api/messages?date=2020-01-01' });
+check('messages date filter (empty day)', msgEmptyDay.code === 0 && msgEmptyDay.data.items.length === 0, msgEmptyDay.data?.items?.length);
+const msgUnread = await call('server/messages/index.js', { ...docAuth, url: '/api/messages?read=unread&limit=200' });
+check('messages unread filter', msgUnread.code === 0 && msgUnread.data.items.every(m => !m.read) && msgUnread.data.items.length === msgToday.data.unread, { n: msgUnread.data?.items?.length, unread: msgToday.data?.unread });
+const msgPage = await call('server/messages/index.js', { ...docAuth, url: '/api/messages?limit=2' });
+check('messages pagination cursor', msgPage.code === 0 && msgPage.data.items.length <= 2 && (msgPage.data.nextBefore === null || msgPage.data.nextBefore > 0), msgPage.data?.nextBefore);
+
+console.log('\n[13.5] 消息服务：顺序保持 / 未读计数扣减 / 已读可二次查看');
+{
+  const svc = require(join(ROOT, 'server/_lib/services.js'));
+  const { forceSyncRemote } = require(join(ROOT, 'server/_lib/storage.js'));
+  const TEST_UID = 'u_test_msg';
+  const d0 = await getDb();
+  await d0.del(K.msg(TEST_UID), K.msgUnread(TEST_UID));
+
+  const mids = [];
+  for (let i = 0; i < 5; i++) {
+    mids.push(await svc.pushMsg(TEST_UID, { type: 'system', title: `测试消息${i + 1}`, content: `<p>内容${i + 1}</p>`, from: '测试' }));
+  }
+  let list = await svc.listMsgs(TEST_UID, 200);
+  check('msg list newest first', list[0].mid === mids[4] && list[4].mid === mids[0], list.map(m => m.mid));
+  check('unread = 5 after push', (await svc.unreadCount(TEST_UID)) === 5, await svc.unreadCount(TEST_UID));
+
+  await svc.markMsgRead(TEST_UID, mids[2]);
+  list = await svc.listMsgs(TEST_UID, 200);
+  check('order preserved after mark read', list[0].mid === mids[4] && list.find(m => m.mid === mids[2]).read === true, list.map(m => `${m.mid.slice(-4)}:${m.read}`));
+  check('unread decremented to 4', (await svc.unreadCount(TEST_UID)) === 4, await svc.unreadCount(TEST_UID));
+  check('read msg remains in list (二次查看)', list.length === 5 && list.some(m => m.mid === mids[2] && m.read));
+
+  await svc.markAllMsgsRead(TEST_UID);
+  list = await svc.listMsgs(TEST_UID, 200);
+  check('read-all keeps order & all read', list.length === 5 && list.every(m => m.read) && list[0].mid === mids[4], list.map(m => `${m.mid.slice(-4)}:${m.read}`));
+  check('unread = 0 after read-all', (await svc.unreadCount(TEST_UID)) === 0, await svc.unreadCount(TEST_UID));
+
+  /* 本地未启用 Blob 时 forceSyncRemote 安全返回 0（生产启用时才走远端收敛） */
+  const nSync = await forceSyncRemote();
+  check('forceSyncRemote safe when blob disabled', nSync === 0, nSync);
+}
+
 console.log('\n[14] 图片上传（KV 兜底模式）');
 const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const up = await call('server/records/upload.js', { ...patAuth, method: 'POST', body: { filename: 'a.png', dataUrl: tinyPng } });

@@ -6,7 +6,7 @@
 const { randomUUID } = require('node:crypto');
 const { defineHandler } = require('../_lib/handler');
 const { ApiError } = require('../_lib/response');
-const { getDb, K, dateStr } = require('../_lib/storage');
+const { getDb, K, dateStr, forceSyncRemote } = require('../_lib/storage');
 const { signAccess, issueRefresh, verifyPassword, ACCESS_TTL_SEC } = require('../_lib/auth');
 const { pushMsg, track, audit, updatePatient } = require('../_lib/services');
 const { matchPatient, indexPatient } = require('../_lib/patient-match');
@@ -28,8 +28,12 @@ async function findUserByIdentifier(db, { username, phone }) {
 }
 
 async function registerPatient(db, { phone, passwordHash, profile }) {
-  // 手机号唯一性（用户维度）
-  const exist = await db.get(K.phoneIdx(phone));
+  // 手机号唯一性（用户维度）；未命中先强制收敛远端，防止多实例不收敛误判/重复建档
+  let exist = await db.get(K.phoneIdx(phone));
+  if (!exist) {
+    await forceSyncRemote();
+    exist = await db.get(K.phoneIdx(phone));
+  }
   if (exist) throw new ApiError(409, 40901, '该手机号已注册，请直接登录');
 
   const uid = 'u_p_' + randomUUID().replace(/-/g, '').slice(0, 12);
@@ -162,7 +166,12 @@ module.exports = defineHandler({
         throw new ApiError(422, 42202, '验证码错误或已过期');
       }
       await db.del(K.sms(input.phone));
-      const user = await findUserByIdentifier(db, { phone: input.phone });
+      let user = await findUserByIdentifier(db, { phone: input.phone });
+      if (!user) {
+        // 多实例兜底：其他实例刚注册的账号本实例可能尚未收敛，先强制同步远端再重查
+        await forceSyncRemote();
+        user = await findUserByIdentifier(db, { phone: input.phone });
+      }
       if (!user) {
         await recordLogin(db, { account: input.phone, mode: 'sms', status: 'fail', reason: '尚未注册', ...meta });
         throw new ApiError(404, 40401, '该手机号尚未注册，请先完成注册建档');
@@ -177,7 +186,12 @@ module.exports = defineHandler({
     const lockKey = String(input.username).trim().toLowerCase();
     await assertNotLocked(db, lockKey);
 
-    const user = await findUserByIdentifier(db, { username: input.username });
+    let user = await findUserByIdentifier(db, { username: input.username });
+    if (!user) {
+      // 多实例兜底：其他实例刚注册的账号本实例可能尚未收敛，先强制同步远端再重查
+      await forceSyncRemote();
+      user = await findUserByIdentifier(db, { username: input.username });
+    }
     if (!user) {
       await recordLogin(db, { account: input.username, mode: 'password', status: 'fail', reason: '账号不存在', ...meta });
       throw new ApiError(404, 40401, '账号不存在，请核对后重试，或先注册建档');

@@ -10,7 +10,7 @@ export const api = {
   config: () => http.get('/config'),
 
   /* 消息中心（医护端） */
-  messages: () => http.get('/messages'),
+  messages: (params) => http.get('/messages', { params }),
   readMessage: (mid) => http.post(`/messages/${mid}/read`),
   readAllMessages: () => http.post('/messages/read-all'),
 
