@@ -30,6 +30,7 @@ async function updatePatient(patientId, mutator, expectVersion) {
     const raw = await db.get(K.patient(patientId));
     if (!raw) throw new ApiError(404, 40400, '患者不存在');
     const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const prevUserId = p.userId || null;
     if (expectVersion !== undefined && expectVersion !== null && Number(p.version) !== Number(expectVersion)) {
       throw new ApiError(409, 40903, '数据已被他人修改，请刷新后重试');
     }
@@ -39,8 +40,53 @@ async function updatePatient(patientId, mutator, expectVersion) {
     await db.set(K.patient(patientId), JSON.stringify(p));
     await db.zadd(K.docPatients(p.docId), p.lastActivityAt, p.id);
     await db.zadd(K.allPatients, p.lastActivityAt, p.id);
+    /* userId 反向索引维护：绑定/换绑 O(1) 可查，旧绑定清除 */
+    if (prevUserId && prevUserId !== p.userId) await db.del(K.patientIdxUserId(prevUserId));
+    if (p.userId) await db.set(K.patientIdxUserId(p.userId), p.id);
     return p;
   });
+}
+
+/**
+ * 患者账号-档案关联自愈：user.patientId 为空时按 userId 反查档案并回写用户表。
+ * 修复历史版本"注册建档未回写 patientId"的存量账号（症状：刷新令牌/再次登录后
+ * 患者端丢失档案关联，填报报"患者档案不存在"）。幂等，仅患者角色且缺关联时执行。
+ * @param {object} u hgetall 得到的用户对象（须含 id/role），就地补 patientId
+ * @returns {object} 原用户对象（可能已补 patientId）
+ */
+async function ensurePatientLink(db, u) {
+  try {
+    if (!u || u.role !== 'patient' || !u.id) return u;
+    if (u.patientId) return u;
+    /* O(1) 快路径：userId → patientId 反向索引直查 */
+    const idxPid = await db.get(K.patientIdxUserId(u.id));
+    if (idxPid) {
+      const p = await getPatient(idxPid);
+      if (p && p.userId === u.id) {
+        await db.hset(K.user(u.id), { patientId: idxPid });
+        u.patientId = idxPid;
+        logger.info('patient.link.heal', { uid: u.id, patientId: idxPid, via: 'index' });
+        return u;
+      }
+      /* 悬空/错绑索引：清理后走兜底扫描 */
+      await db.del(K.patientIdxUserId(u.id));
+    }
+    /* 兜底：存量数据缺索引时全量扫描一次（上限 1000，同 scanIndex 策略），命中后回填索引 */
+    const pids = await db.zrevrange(K.allPatients, 0, 999);
+    for (const pid of pids || []) {
+      const p = await getPatient(pid);
+      if (p && p.userId === u.id) {
+        await db.hset(K.user(u.id), { patientId: pid });
+        await db.set(K.patientIdxUserId(u.id), pid); // 回填反向索引，下次 O(1)
+        u.patientId = pid;
+        logger.info('patient.link.heal', { uid: u.id, patientId: pid, via: 'scan' });
+        break;
+      }
+    }
+  } catch (e) {
+    logger.warn('patient.link.heal.fail', { uid: u && u.id, err: e.message });
+  }
+  return u;
 }
 
 async function addArchiveEntry(patientId, entry) {
@@ -172,6 +218,7 @@ async function setConfig(key, value) {
 module.exports = {
   getPatient,
   updatePatient,
+  ensurePatientLink,
   addArchiveEntry,
   pushMsg,
   listMsgs,

@@ -208,17 +208,25 @@ function mergePayloads(local, remote) {
 
 async function putSnapshot(body) {
   const { put } = await import('@vercel/blob');
-  // 私有 store 需显式 access:'private'（服务端校验必传）；固定路径覆盖
-  await put(SNAPSHOT_KEY, body, { access: 'private', contentType: 'application/json', addRandomSuffix: false });
+  // 私有 store 需显式 access:'private'（服务端校验必传）；固定路径覆盖写入
+  // @vercel/blob 2.8：addRandomSuffix 默认 false → 固定路径二次 put 必须显式 allowOverwrite
+  await put(SNAPSHOT_KEY, body, { access: 'private', contentType: 'application/json', addRandomSuffix: false, allowOverwrite: true });
 }
 
 /** 拉取远端快照（不吞错误：供 uploadNow 区分"无快照"与"读取失败"，失败时禁止上传防覆盖） */
 async function fetchRemote() {
-  const { get } = await import('@vercel/blob');
-  const res = await get(SNAPSHOT_KEY);
-  const payload = JSON.parse(await res.text());
-  if (payload && payload.data && Array.isArray(payload.data.kv)) return payload;
-  return null;
+  try {
+    const { get } = await import('@vercel/blob');
+    // @vercel/blob 2.8：get(pathname) 的 options 为必传（含 access；token 自动从环境解析）
+    const res = await get(SNAPSHOT_KEY, { access: 'private' });
+    const payload = JSON.parse(await res.text());
+    if (payload && payload.data && Array.isArray(payload.data.kv)) return payload;
+    return null;
+  } catch (e) {
+    /* 仓库中尚无快照 ≠ 读取失败：置 null 让 uploadNow 正常首传；其余错误抛出防覆盖 */
+    if (/not found/i.test(String((e && e.message) || e))) return null;
+    throw e;
+  }
 }
 
 /** 强制上传（无视节流；供 Cron 每日兜底调用）。
@@ -283,6 +291,20 @@ function scheduleUpload(db, opts = {}) {
   if (_timer.unref) _timer.unref();
 }
 
+/** 关键写路径同步冲刷：取消挂起防抖，等待在飞上传结束后立即上传当前本地状态。
+ *  Vercel lambda 响应返回后即冻结，防抖定时器不保证执行——注册/建档等"写后立即
+ *  跨实例读"场景必须等待式上传，否则其他实例 forceSync 拉到的仍是旧快照。 */
+async function flushUpload(db) {
+  if (!enabled()) return { skipped: true, reason: 'disabled' };
+  if (_timer) { clearTimeout(_timer); _timer = null; }
+  const deadline = Date.now() + 5000;
+  while (_uploading && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (_uploading) return { skipped: true, reason: 'in-flight-timeout' };
+  return await uploadNow(db);
+}
+
 /** 冷启动引导：下载远端快照；无快照/失败返回 null（调用方走种子兜底） */
 async function download() {
   if (!enabled()) return null;
@@ -317,4 +339,4 @@ function resetForTest() {
   _lastOkTs = 0;
 }
 
-module.exports = { enabled, uploadNow, scheduleUpload, download, mergePayloads, emptyMeta, status, resetForTest };
+module.exports = { enabled, uploadNow, flushUpload, scheduleUpload, download, mergePayloads, emptyMeta, status, resetForTest };

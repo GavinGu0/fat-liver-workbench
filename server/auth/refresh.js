@@ -4,6 +4,7 @@ const { defineHandler } = require('../_lib/handler');
 const { ApiError } = require('../_lib/response');
 const { getDb, K } = require('../_lib/storage');
 const { rotateRefresh, signAccess, ACCESS_TTL_SEC } = require('../_lib/auth');
+const { ensurePatientLink } = require('../_lib/services');
 
 module.exports = defineHandler({
   auth: 'public',
@@ -17,6 +18,7 @@ module.exports = defineHandler({
     const db = await getDb();
     const u = await db.hgetall(K.user(info.uid));
     if (!u || !u.id) throw new ApiError(401, 40100, '账号不存在');
+    await ensurePatientLink(db, u); // 存量账号档案关联自愈（修复后新签发的 token 携带 patientId）
     const user = { uid: u.id, role: u.role, name: u.name, patientId: u.patientId || null, title: u.title || '', dept: u.dept || '' };
     return { user, accessToken: signAccess(user), refreshToken: token, expiresIn: ACCESS_TTL_SEC };
   }

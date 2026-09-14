@@ -8,7 +8,7 @@
  */
 const { randomUUID } = require('node:crypto');
 const { defineHandler } = require('../_lib/handler');
-const { getDb, K, dateStr } = require('../_lib/storage');
+const { getDb, K, dateStr, flushSnapshot } = require('../_lib/storage');
 const { requireRole, hashPassword } = require('../_lib/auth');
 const { getPatient, updatePatient, addArchiveEntry, audit, track, pushMsg } = require('../_lib/services');
 const { parse, registryCreateSchema } = require('../_lib/validate');
@@ -233,6 +233,10 @@ async function bindExistingPatient({ db, input, user, matched, dimension }) {
     accountExisted = true;
     const raw = await db.hgetall(K.user(uid));
     if (raw && raw.username) uname = raw.username;
+    /* 历史自注册账号可能缺失 patientId 回写（导致 refresh 后档案关联丢失），绑定时一并自愈 */
+    if (!raw || !raw.patientId || raw.patientId !== patientId) {
+      await db.hset(K.user(uid), { patientId });
+    }
   } else {
     uname = input.username;
     const existUid = await db.get(K.usernameIdx(uname));
@@ -316,6 +320,7 @@ async function bindExistingPatient({ db, input, user, matched, dimension }) {
   await track('registry_create', { doc_id: user.uid, patient_id: patientId, risk: record.riskLevel, matched: true });
   logger.info('registry.bind', { patientId, dimension, accountExisted, docId: user.uid });
 
+  await flushSnapshot(); // 同步冲刷 Blob：建档后患者立即登录（可能命中其他实例）必须能收敛到账号/档案
   return {
     patientId,
     userId: uid,

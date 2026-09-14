@@ -6,9 +6,9 @@
 const { randomUUID } = require('node:crypto');
 const { defineHandler } = require('../_lib/handler');
 const { ApiError } = require('../_lib/response');
-const { getDb, K, dateStr, forceSyncRemote } = require('../_lib/storage');
+const { getDb, K, dateStr, forceSyncRemote, flushSnapshot } = require('../_lib/storage');
 const { signAccess, issueRefresh, verifyPassword, ACCESS_TTL_SEC } = require('../_lib/auth');
-const { pushMsg, track, audit, updatePatient } = require('../_lib/services');
+const { pushMsg, track, audit, updatePatient, ensurePatientLink } = require('../_lib/services');
 const { matchPatient, indexPatient } = require('../_lib/patient-match');
 const { parse, loginSchema } = require('../_lib/validate');
 const { clientMeta, recordLogin, assertNotLocked, registerFailure, clearFailures, MAX_FAIL, LOCK_MIN } = require('../_lib/login-security');
@@ -76,6 +76,7 @@ async function registerPatient(db, { phone, passwordHash, profile }) {
     await track('patient_register', { user_id: uid, matched: true });
     await audit('patient.register', { uid, patientId: matched.id, operator: uid, matched: true });
     logger.info('patient.register.bind', { uid, patientId: matched.id, dimension });
+    await flushSnapshot(); // 同步冲刷 Blob：防 lambda 冻结丢上传，保证其他实例立即可收敛到新绑定
     return { user: pubUser({ id: uid, role: 'patient', name: profile.name, patientId: matched.id }), patient, matched: true };
   }
 
@@ -109,6 +110,9 @@ async function registerPatient(db, { phone, passwordHash, profile }) {
   await db.zadd(K.allPatients, Date.now(), patientId);
   await db.zadd(K.patientCreated(patient.docId), Date.now(), patientId);
   await indexPatient(db, patient); // 唯一标识索引（手机号 → patientId）
+  /* 关键：patientId 回写用户表 —— 否则刷新令牌/再次登录从用户表读取时 patientId 为空，
+     access token 过期刷新后即丢失档案关联，患者端填报报"患者档案不存在" */
+  await db.hset(K.user(uid), { patientId });
 
   await pushMsg(uid, {
     type: 'education',
@@ -120,6 +124,7 @@ async function registerPatient(db, { phone, passwordHash, profile }) {
   await audit('patient.register', { uid, patientId, operator: uid });
   logger.info('patient.register', { uid, patientId });
 
+  await flushSnapshot(); // 同步冲刷 Blob：防 lambda 冻结丢上传，保证其他实例（医生端）立即可收敛到新患者
   return { user: pubUser({ id: uid, role: 'patient', name: profile.name, patientId }), patient, matched: false };
 }
 
@@ -178,6 +183,7 @@ module.exports = defineHandler({
       }
       // 短信验证码登录不受密码锁定影响（自助解锁路径），但成功后清除失败计数
       await clearFailures(db, String(input.phone).toLowerCase());
+      await ensurePatientLink(db, user); // 存量账号档案关联自愈
       return finalize(pubUser(user), { ...meta, account: input.phone, mode: 'sms' });
     }
 
@@ -213,6 +219,7 @@ module.exports = defineHandler({
         : `密码错误，还可尝试 ${MAX_FAIL - r.count} 次（超出后账号将临时锁定）`);
     }
     await clearFailures(db, lockKey);
+    await ensurePatientLink(db, user); // 存量账号档案关联自愈
     return finalize(pubUser(user), { ...meta, account: input.username, mode: 'password' });
   }
 });

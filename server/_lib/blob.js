@@ -12,7 +12,8 @@ async function putBlob(pathname, body, contentType) {
   try {
     const { put } = await import('@vercel/blob');
     // 私有 store 需显式 access:'private'（服务端校验必传）
-    const res = await put(pathname, body, { access: 'private', contentType });
+    // @vercel/blob 2.8：addRandomSuffix 默认 false → 固定路径（审计/备份归档）重复写入需显式 allowOverwrite
+    const res = await put(pathname, body, { access: 'private', contentType, allowOverwrite: true });
     return res && res.url ? res.url : null;
   } catch (e) {
     console.error('[blob] put failed:', e.message);

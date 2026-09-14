@@ -71,7 +71,9 @@ const K = {
   loginLock: (key) => `login:lock:${key}`,
   loginIpUser: (ip) => `login:ip-user:${ip}`,
   patientIdxIdCard: (id) => `patient:index:idcard:${String(id).toUpperCase()}`,
-  patientIdxPhone: (p) => `patient:index:phone:${p}`
+  patientIdxPhone: (p) => `patient:index:phone:${p}`,
+  /* userId → patientId 反向索引（O(1) 档案关联自愈，避免全量遍历 allPatients） */
+  patientIdxUserId: (uid) => `patient:index:userId:${uid}`
 };
 
 /** 以上海时区计算 yyyy-MM-dd（服务运行于 UTC，业务日期按本地时区取） */
@@ -595,7 +597,13 @@ async function maybeSyncRemote() {
 }
 
 async function init() {
-  const driver = (process.env.STORAGE_DRIVER || 'auto').toLowerCase();
+  /* 驱动选择：Vercel 多实例场景默认 memory（memoryStore 实现 mergeRows 增量合并，
+     依托 L3 Blob 快照实现跨实例收敛；sqlite 驱动每实例 /tmp 文件相互隔离且无 mergeRows，
+     温实例永远不会看到其他实例的新注册患者/记录 —— 医生端看不到新患者、患者端
+     "患者档案不存在"的根因）。显式设置 STORAGE_DRIVER 时以显式值为准；
+     本地开发（非 Vercel）保持 auto：优先 SQLite 真实落盘。 */
+  const driver = (process.env.STORAGE_DRIVER
+    || (process.env.VERCEL === '1' ? 'memory' : 'auto')).toLowerCase();
   let store = null;
 
   /* 驱动选择：auto/sqlite → 优先 SQLite（真实数据库文件）；memory → 强制内存 */
@@ -758,4 +766,16 @@ async function forceSyncRemote() {
   }
 }
 
-module.exports = { getDb, mode, K, dateStr, setNxEx, withLock, memoryStore, maybeSyncRemote, forceSyncRemote, resetForTest };
+/**
+ * 关键写路径同步冲刷 Blob 快照（注册/建档等"写后立即跨实例读"的强一致保障）：
+ * 立即上传并等待完成，失败不抛错（后续防抖/温同步兜底）。
+ */
+async function flushSnapshot() {
+  try {
+    return await blobSnapshot.flushUpload(await getDb());
+  } catch {
+    return { ok: false };
+  }
+}
+
+module.exports = { getDb, mode, K, dateStr, setNxEx, withLock, memoryStore, maybeSyncRemote, forceSyncRemote, flushSnapshot, resetForTest };

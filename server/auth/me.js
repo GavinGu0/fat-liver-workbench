@@ -6,13 +6,14 @@
  */
 const { defineHandler } = require('../_lib/handler');
 const { getDb, K } = require('../_lib/storage');
-const { getPatient } = require('../_lib/services');
+const { getPatient, ensurePatientLink } = require('../_lib/services');
 
 module.exports = defineHandler({
   auth: 'any',
   fn: async ({ user }) => {
     const db = await getDb();
     const u = await db.hgetall(K.user(user.uid));
+    await ensurePatientLink(db, u); // 存量账号档案关联自愈
     const base = {
       uid: user.uid,
       role: user.role,

@@ -87,12 +87,15 @@ async function loadPatient(db, pid) {
 async function indexPatient(db, patient) {
   if (patient.idCard) await db.set(K.patientIdxIdCard(patient.idCard), patient.id);
   if (patient.phone) await db.set(K.patientIdxPhone(patient.phone), patient.id);
+  /* userId → patientId 反向索引：档案关联自愈 O(1) 直查，免去全量遍历 allPatients */
+  if (patient.userId) await db.set(K.patientIdxUserId(patient.userId), patient.id);
 }
 
-/** 变更手机号/身份证时同步索引（旧的清除） */
+/** 变更手机号/身份证/userId 时同步索引（旧的清除） */
 async function reindexPatient(db, patient, prev = {}) {
   if (prev.phone && prev.phone !== patient.phone) await db.del(K.patientIdxPhone(prev.phone));
   if (prev.idCard && prev.idCard !== patient.idCard) await db.del(K.patientIdxIdCard(prev.idCard));
+  if (prev.userId && prev.userId !== patient.userId) await db.del(K.patientIdxUserId(prev.userId));
   await indexPatient(db, patient);
 }
 
